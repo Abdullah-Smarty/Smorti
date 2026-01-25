@@ -6,6 +6,29 @@ Run with: streamlit run streamlit_app.py
 import streamlit as st
 import sys
 import os
+import re
+import html
+from pathlib import Path
+
+# ----------------------------
+# Page configuration (keep early)
+# ----------------------------
+st.set_page_config(
+    page_title="Smorti - SMART Store Assistant",
+    page_icon="🤖",
+    layout="centered"
+)
+
+# ----------------------------
+# Load Streamlit Secrets early (Cloud) -> env vars
+# (Keeps local .env behavior if your CLAUDE.py loads dotenv)
+# ----------------------------
+def load_secrets_to_env():
+    for k in ("GROQ_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+        if k in st.secrets and not os.getenv(k):
+            os.environ[k] = st.secrets[k]
+
+load_secrets_to_env()
 
 # Add the parent directory to the path so we can import from CLAUDE.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,23 +40,58 @@ from CLAUDE import (
     logger
 )
 
-# Page configuration
-st.set_page_config(
-    page_title="Smorti - SMART Store Assistant",
-    page_icon="🤖",
-    layout="centered"
-)
+# ----------------------------
+# Arabic / RTL helpers
+# ----------------------------
+ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
 
+def is_arabic(text: str) -> bool:
+    return bool(ARABIC_RE.search(text or ""))
+
+def prettify_links(text: str) -> str:
+    """Put URLs on their own line to reduce RTL weirdness with long links."""
+    return re.sub(r"(https?://\S+)", r"\n\1", text or "")
+
+def render_message(content: str):
+    """Render message with RTL for Arabic and LTR for English."""
+    content = content or ""
+    content = prettify_links(content)
+
+    # Escape HTML but keep new lines
+    safe = html.escape(content).replace("\n", "<br>")
+
+    if is_arabic(content):
+        st.markdown(f'<div class="rtl">{safe}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="ltr">{safe}</div>', unsafe_allow_html=True)
+
+# ----------------------------
 # Custom CSS for better Arabic support and styling
+# ----------------------------
 st.markdown("""
     <style>
+    /* Better font stack for Arabic + English */
+    html, body, [class*="css"] {
+        font-family: "Segoe UI", "Tahoma", "Arial", "Noto Naskh Arabic", "Noto Sans Arabic", sans-serif;
+    }
+
     .stChatMessage {
         font-size: 16px;
         line-height: 1.6;
     }
+
     .rtl {
         direction: rtl;
         text-align: right;
+        unicode-bidi: plaintext;
+        word-break: break-word;
+    }
+
+    .ltr {
+        direction: ltr;
+        text-align: left;
+        unicode-bidi: plaintext;
+        word-break: break-word;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -42,14 +100,25 @@ st.markdown("""
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Use absolute path to be safe on Streamlit Cloud
+ROOT = Path(__file__).resolve().parent
+CATALOG_PATH = ROOT / "data" / "products_enriched.csv"
+
+# Cache catalog for stability + speed (prevents heavy reload feel)
+@st.cache_resource
+def load_catalog():
+    cat = ProductCatalog(str(CATALOG_PATH))
+    cat.load()
+    logger.info("Catalog loaded successfully in Streamlit (cached)")
+    return cat
+
 if "catalog" not in st.session_state:
     with st.spinner("🔄 جاري تحميل الكتالوج..."):
         try:
-            st.session_state.catalog = ProductCatalog('data/products_enriched.csv')
-            st.session_state.catalog.load()
-            logger.info("Catalog loaded successfully in Streamlit")
+            st.session_state.catalog = load_catalog()
         except Exception as e:
-            st.error(f"❌ خطأ في تحميل الكتالوج: {e}")
+            st.error("❌ خطأ في تحميل الكتالوج. التفاصيل بالأسفل:")
+            st.exception(e)
             st.stop()
 
 # System prompt
@@ -129,7 +198,8 @@ English: "Hello! I'm Smorti 😊, your AI assistant at SMART store. How can I he
 - قسم البرامج: https://shop.smart.sa/ar/category/QvKYzR
 - واتساب: https://wa.me/966593440030
 - سياسة الإرجاع: https://shop.smart.sa/p/OYDNm
-- الضمان: https://shop.smart.sa/ar/p/ErDop"""
+- الضمان: https://shop.smart.sa/ar/p/ErDop
+"""
 
 # Header
 st.title("🤖 Smorti - مساعد متجر SMART")
@@ -152,13 +222,13 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# Display chat messages
+# Display chat messages (RTL/LTR)
 for message in st.session_state.messages:
     role = "user" if message["role"] == "user" else "assistant"
     avatar = "🧑" if role == "user" else "🤖"
 
     with st.chat_message(role, avatar=avatar):
-        st.write(message["content"])
+        render_message(message["content"])
 
 # Chat input
 if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message here..."):
@@ -166,7 +236,7 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("user", avatar="🧑"):
-        st.write(prompt)
+        render_message(prompt)
 
     # Get AI response
     with st.chat_message("assistant", avatar="🤖"):
@@ -190,7 +260,7 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                 )
 
                 # Display response
-                st.write(response)
+                render_message(response)
 
                 # Add to message history
                 st.session_state.messages.append({
@@ -199,7 +269,8 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                 })
 
             except Exception as e:
-                st.error(f"❌ خطأ: {str(e)}")
+                st.error("❌ خطأ (تفاصيل):")
+                st.exception(e)
                 logger.error(f"Streamlit error: {e}", exc_info=True)
 
 # Footer
