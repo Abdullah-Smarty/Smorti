@@ -1,0 +1,28 @@
+﻿# secrets
+.env
+*.env
+.env.*
+
+# virtual env
+.venv/
+.venv*/
+venv/
+
+# caches / logs
+__pycache__/
+*.pyc
+*.log
+smorti_errors*
+
+# IDE
+.idea/
+
+# local vector db / cache
+chroma_db/
+
+*.xlsx
+
+# ignore whatsapp exports
+prev/outgoing_messages_only.csv
+prev/whatsapp_chat_history_clean.csv
+prev/*.csv
