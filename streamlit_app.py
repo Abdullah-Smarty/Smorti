@@ -8,10 +8,12 @@ import sys
 import os
 import re
 import html
+import json
+import time
 from pathlib import Path
 
 # ----------------------------
-# Page configuration (keep early)
+# Page configuration
 # ----------------------------
 st.set_page_config(
     page_title="Smorti - SMART Store Assistant",
@@ -21,7 +23,6 @@ st.set_page_config(
 
 # ----------------------------
 # Load Streamlit Secrets early (Cloud) -> env vars
-# (Keeps local .env behavior if your CLAUDE.py loads dotenv)
 # ----------------------------
 def load_secrets_to_env():
     for k in ("GROQ_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
@@ -41,6 +42,22 @@ from CLAUDE import (
 )
 
 # ----------------------------
+# Logging helpers (to Streamlit Cloud logs)
+# ----------------------------
+def clip(s: str, n: int = 800) -> str:
+    s = s or ""
+    return (s[:n] + "…") if len(s) > n else s
+
+def log_event(event: str, payload: dict):
+    record = {
+        "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "event": event,
+        **payload
+    }
+    # One-line JSON logs: easy to grep in Streamlit logs
+    logger.info(json.dumps(record, ensure_ascii=False))
+
+# ----------------------------
 # Arabic / RTL helpers
 # ----------------------------
 ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
@@ -57,7 +74,6 @@ def render_message(content: str):
     content = content or ""
     content = prettify_links(content)
 
-    # Escape HTML but keep new lines
     safe = html.escape(content).replace("\n", "<br>")
 
     if is_arabic(content):
@@ -104,7 +120,7 @@ if "messages" not in st.session_state:
 ROOT = Path(__file__).resolve().parent
 CATALOG_PATH = ROOT / "data" / "products_enriched.csv"
 
-# Cache catalog for stability + speed (prevents heavy reload feel)
+# Cache catalog for stability + speed
 @st.cache_resource
 def load_catalog():
     cat = ProductCatalog(str(CATALOG_PATH))
@@ -116,7 +132,9 @@ if "catalog" not in st.session_state:
     with st.spinner("🔄 جاري تحميل الكتالوج..."):
         try:
             st.session_state.catalog = load_catalog()
+            log_event("catalog_loaded", {"path": str(CATALOG_PATH)})
         except Exception as e:
+            log_event("catalog_load_error", {"error": str(e), "path": str(CATALOG_PATH)})
             st.error("❌ خطأ في تحميل الكتالوج. التفاصيل بالأسفل:")
             st.exception(e)
             st.stop()
@@ -205,11 +223,14 @@ English: "Hello! I'm Smorti 😊, your AI assistant at SMART store. How can I he
 st.title("🤖 Smorti - مساعد متجر SMART")
 st.markdown("---")
 
-# Sidebar with info
+# Sidebar with info + debug toggle
 with st.sidebar:
     st.header("ℹ️ معلومات التطبيق")
     st.write("**Smorti AI Assistant**")
     st.write("نسخة تجريبية")
+
+    st.markdown("---")
+    debug = st.toggle("🪲 Debug mode (إظهار التفاصيل)", value=False)
 
     st.markdown("---")
     st.subheader("📊 إحصائيات")
@@ -219,6 +240,7 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🔄 إعادة تشغيل المحادثة"):
+        log_event("chat_reset", {"messages_before": len(st.session_state.messages)})
         st.session_state.messages = []
         st.rerun()
 
@@ -250,6 +272,19 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                         "content": msg["content"]
                     })
 
+                # Log input (safe clipped)
+                log_event("user_message", {
+                    "text": clip(prompt),
+                    "is_arabic": is_arabic(prompt),
+                    "history_len": len(conversation_history),
+                })
+
+                if debug:
+                    st.sidebar.subheader("🧾 آخر إدخال")
+                    st.sidebar.write(prompt)
+                    st.sidebar.subheader("🧠 Conversation history (آخر 6)")
+                    st.sidebar.json(conversation_history[-6:])
+
                 # Get response
                 response = handle_chat_message(
                     user_input=prompt,
@@ -258,6 +293,12 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                     conversation_history=conversation_history,
                     language='auto'
                 )
+
+                # Log output (safe clipped)
+                log_event("assistant_response", {
+                    "text": clip(response),
+                    "len": len(response) if response else 0,
+                })
 
                 # Display response
                 render_message(response)
@@ -269,6 +310,7 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                 })
 
             except Exception as e:
+                log_event("error", {"error": str(e)})
                 st.error("❌ خطأ (تفاصيل):")
                 st.exception(e)
                 logger.error(f"Streamlit error: {e}", exc_info=True)
