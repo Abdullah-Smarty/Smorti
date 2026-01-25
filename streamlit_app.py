@@ -10,6 +10,7 @@ import re
 import html
 import json
 import time
+import uuid
 from pathlib import Path
 
 # ----------------------------
@@ -31,10 +32,18 @@ def load_secrets_to_env():
 
 load_secrets_to_env()
 
+# ----------------------------
+# Session ID (per user session) for logging
+# ----------------------------
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())[:8]
+
+# ----------------------------
 # Add the parent directory to the path so we can import from CLAUDE.py
+# ----------------------------
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import from your CLAUDE.py file
+# Import from your CLAUDE.py file (after env keys are set)
 from CLAUDE import (
     ProductCatalog,
     handle_chat_message,
@@ -42,20 +51,37 @@ from CLAUDE import (
 )
 
 # ----------------------------
-# Logging helpers (to Streamlit Cloud logs)
+# Logging helpers
+# (These logs show in Streamlit Cloud -> Manage app -> Logs)
 # ----------------------------
-def clip(s: str, n: int = 800) -> str:
+def clip(s: str, n: int = 350) -> str:
     s = s or ""
+    s = s.replace("\r", " ").replace("\n", " ")
     return (s[:n] + "…") if len(s) > n else s
 
 def log_event(event: str, payload: dict):
     record = {
         "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "sid": st.session_state.session_id,
         "event": event,
         **payload
     }
-    # One-line JSON logs: easy to grep in Streamlit logs
-    logger.info(json.dumps(record, ensure_ascii=False))
+    line = json.dumps(record, ensure_ascii=False)
+
+    # Guaranteed to show in Streamlit Cloud logs:
+    print(line)
+
+    # Also keep your python logger:
+    try:
+        logger.info(line)
+    except Exception:
+        pass
+
+    # Keep last few events inside session (optional sidebar debug)
+    if "debug_events" not in st.session_state:
+        st.session_state.debug_events = []
+    st.session_state.debug_events.append(record)
+    st.session_state.debug_events = st.session_state.debug_events[-40:]  # keep last 40
 
 # ----------------------------
 # Arabic / RTL helpers
@@ -86,7 +112,6 @@ def render_message(content: str):
 # ----------------------------
 st.markdown("""
     <style>
-    /* Better font stack for Arabic + English */
     html, body, [class*="css"] {
         font-family: "Segoe UI", "Tahoma", "Arial", "Noto Naskh Arabic", "Noto Sans Arabic", sans-serif;
     }
@@ -116,7 +141,7 @@ st.markdown("""
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Use absolute path to be safe on Streamlit Cloud
+# Absolute paths (Cloud-safe)
 ROOT = Path(__file__).resolve().parent
 CATALOG_PATH = ROOT / "data" / "products_enriched.csv"
 
@@ -125,16 +150,18 @@ CATALOG_PATH = ROOT / "data" / "products_enriched.csv"
 def load_catalog():
     cat = ProductCatalog(str(CATALOG_PATH))
     cat.load()
-    logger.info("Catalog loaded successfully in Streamlit (cached)")
     return cat
 
 if "catalog" not in st.session_state:
     with st.spinner("🔄 جاري تحميل الكتالوج..."):
         try:
             st.session_state.catalog = load_catalog()
-            log_event("catalog_loaded", {"path": str(CATALOG_PATH)})
+            log_event("catalog_loaded", {
+                "catalog_path": str(CATALOG_PATH),
+                "products_count": len(getattr(st.session_state.catalog, "products", []) or []),
+            })
         except Exception as e:
-            log_event("catalog_load_error", {"error": str(e), "path": str(CATALOG_PATH)})
+            log_event("catalog_load_error", {"error": str(e), "catalog_path": str(CATALOG_PATH)})
             st.error("❌ خطأ في تحميل الكتالوج. التفاصيل بالأسفل:")
             st.exception(e)
             st.stop()
@@ -232,11 +259,23 @@ with st.sidebar:
     st.markdown("---")
     debug = st.toggle("🪲 Debug mode (إظهار التفاصيل)", value=False)
 
+    # Key presence indicators (optional)
+    st.markdown("---")
+    st.subheader("🔐 حالة المفاتيح")
+    st.write("GROQ_API_KEY:", "✅" if os.getenv("GROQ_API_KEY") else "❌")
+    st.write("OPENAI_API_KEY:", "✅" if os.getenv("OPENAI_API_KEY") else "❌")
+
     st.markdown("---")
     st.subheader("📊 إحصائيات")
-    if st.session_state.catalog.products:
+    if getattr(st.session_state.catalog, "products", None):
         st.metric("عدد المنتجات", len(st.session_state.catalog.products))
     st.metric("عدد الرسائل", len(st.session_state.messages))
+    st.caption(f"Session ID: `{st.session_state.session_id}`")
+
+    if debug and "debug_events" in st.session_state:
+        st.markdown("---")
+        st.subheader("📜 Debug events (آخر 40)")
+        st.json(st.session_state.debug_events)
 
     st.markdown("---")
     if st.button("🔄 إعادة تشغيل المحادثة"):
@@ -244,35 +283,30 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# Display chat messages (RTL/LTR)
+# Display chat messages
 for message in st.session_state.messages:
     role = "user" if message["role"] == "user" else "assistant"
     avatar = "🧑" if role == "user" else "🤖"
-
     with st.chat_message(role, avatar=avatar):
         render_message(message["content"])
 
 # Chat input
 if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message here..."):
-    # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("user", avatar="🧑"):
         render_message(prompt)
 
-    # Get AI response
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("⏳ جاري الكتابة..."):
             try:
-                # Build conversation history for API
-                conversation_history = []
-                for msg in st.session_state.messages[:-1]:  # Exclude the last user message
-                    conversation_history.append({
-                        "role": msg["role"],
-                        "content": msg["content"]
-                    })
+                # Build conversation history for API (exclude current user message)
+                conversation_history = [
+                    {"role": msg["role"], "content": msg["content"]}
+                    for msg in st.session_state.messages[:-1]
+                ]
 
-                # Log input (safe clipped)
+                # Log input
                 log_event("user_message", {
                     "text": clip(prompt),
                     "is_arabic": is_arabic(prompt),
@@ -294,7 +328,7 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                     language='auto'
                 )
 
-                # Log output (safe clipped)
+                # Log output
                 log_event("assistant_response", {
                     "text": clip(response),
                     "len": len(response) if response else 0,
@@ -303,17 +337,13 @@ if prompt := st.chat_input("اكتب رسالتك هنا... / Type your message 
                 # Display response
                 render_message(response)
 
-                # Add to message history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": response
-                })
+                # Save to history
+                st.session_state.messages.append({"role": "assistant", "content": response})
 
             except Exception as e:
-                log_event("error", {"error": str(e)})
+                log_event("error", {"error": str(e), "prompt": clip(prompt)})
                 st.error("❌ خطأ (تفاصيل):")
                 st.exception(e)
-                logger.error(f"Streamlit error: {e}", exc_info=True)
 
 # Footer
 st.markdown("---")
