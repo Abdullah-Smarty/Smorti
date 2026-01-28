@@ -14,7 +14,7 @@ import time
 import uuid
 import random
 from pathlib import Path
-
+APP_VERSION = "v1.2"
 # ----------------------------
 # Page configuration
 # ----------------------------
@@ -296,7 +296,7 @@ SYSTEM_PROMPT = """أنت سمورتي (Smorti)، مساعد ذكاء اصطنا
 # ----------------------------
 st.title("🤖 Smorti - مساعد متجر SMART")
 st.markdown("---")
-
+st.caption(f"Smorti {APP_VERSION} 🤍")
 # ----------------------------
 # Sidebar
 # ----------------------------
@@ -304,6 +304,7 @@ with st.sidebar:
     st.header("ℹ️ معلومات التطبيق")
     st.write("**Smorti AI Assistant**")
     st.write("نسخة تجريبية")
+    st.sidebar.caption(f"Version: {APP_VERSION}")
 
     st.markdown("---")
     debug = st.toggle("🪲 Debug mode (إظهار التفاصيل)", value=False)
