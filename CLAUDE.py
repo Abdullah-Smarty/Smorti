@@ -1,8 +1,20 @@
 """
-Smorti AI Agent - Enhanced Error Handling System
-Local CLI Testing with Advanced Product Matching & Comparison
-Supports: Pandas, Groq (Llama 3.3), Multi-language, Smart Recommendations
+Smorti AI Agent (CLAUDE.py) - v1.2
+Backend engine used by Streamlit app + local CLI.
+
+What’s new in v1.2 (based on your tests):
+✅ If user asks for "شاشة" (screen) it won’t default to BOOX only — it will look for Monitors + Interactive Screens too.
+✅ For gaming: it will suggest monitors / interactive screens we actually have in the CSV, and clearly say they *can* run games (but may not be “gaming-first”).
+✅ No more made-up screen specs/links: the model is forced to use ONLY catalog fields; if spec isn’t in CSV it must say “غير مذكور في الكتالوج”.
+✅ Contact info: no placeholders like [رقم الهاتف]. Only official links (store + WhatsApp).
+✅ Personality: more playful + light sarcasm, mentions it’s an AI under development, asks for patience 🤍
+✅ Poetry/story: more Arabic-literature friendly (allowed to be creative), but still MUST NOT invent product specs/links.
+
+IMPORTANT:
+- Streamlit will reflect these changes as soon as you commit+push CLAUDE.py and Streamlit Cloud redeploys.
 """
+
+from __future__ import annotations
 
 import logging
 from functools import wraps
@@ -14,15 +26,17 @@ import os
 from dotenv import load_dotenv
 import re
 
-# Load environment variables from .env file
+APP_VERSION = "v1.2"
+
+# Load environment variables from .env file (local). Streamlit Cloud uses st.secrets -> env.
 load_dotenv()
 
 # ============================================
-# 1. LOGGING CONFIGURATION
+# 1) LOGGING CONFIGURATION
 # ============================================
 
 def setup_logging():
-    """Configure logging for local testing"""
+    """Configure logging for local testing + Streamlit Cloud."""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - [%(levelname)s] - %(message)s',
@@ -35,53 +49,173 @@ def setup_logging():
 
 logger = setup_logging()
 
+# ============================================
+# 2) CONSTANTS / HELPERS
+# ============================================
+
+ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
+URL_RE = re.compile(r"https?://\S+")
+
+OFFICIAL_LINKS = {
+    "store": "https://shop.smart.sa/ar",
+    "tablets": "https://shop.smart.sa/ar/category/EdyrGY",
+    "interactive": "https://shop.smart.sa/ar/category/YYKKAR",
+    "computer": "https://shop.smart.sa/ar/category/AxRPaD",
+    "software": "https://shop.smart.sa/ar/category/QvKYzR",
+    "whatsapp": "https://wa.me/966593440030",
+}
+
+# Installments (must be correct)
+INSTALLMENT_FACTS_AR = (
+    "💳 التقسيط المتوفر عندنا: Tabby / Tamara / MisPay.\n"
+    "عادةً 4 دفعات بدون فوائد: 25% الآن والباقي على 3 أشهر.\n"
+    "ويمكن تمديد المدة حسب مزوّد التقسيط.\n"
+    "التفاصيل النهائية تظهر في صفحة الدفع عند إتمام الطلب."
+)
+INSTALLMENT_FACTS_EN = (
+    "💳 Installments available: Tabby / Tamara / MisPay.\n"
+    "Typically 4 payments with 0% interest: 25% now, the rest over 3 months.\n"
+    "Some providers allow extending the period depending on the provider.\n"
+    "Final details appear at checkout."
+)
+
+BATTERY_FACTS_AR = (
+    "🔋 بطارية أجهزة الحبر الإلكتروني غالباً تدوم أيام (3–4 أيام بسهولة حسب الاستخدام).\n"
+    "الأبيض والأسود غالباً يدوم أطول من الملون بسبب استهلاك أقل.\n"
+    "المدة تختلف حسب الواي فاي/البلوتوث/الكتابة بالقلم."
+)
+BATTERY_FACTS_EN = (
+    "🔋 E-ink devices usually last for days (often 3–4 days easily depending on usage).\n"
+    "Monochrome typically lasts longer than color due to lower power draw.\n"
+    "It varies with Wi-Fi/Bluetooth/pen usage."
+)
+
+LIFESPAN_FACTS_AR = (
+    "⏳ عمر الجهاز يعتمد على استخدامك (دورات الشحن، الحرارة، كثافة الاستخدام).\n"
+    "بشكل عام ومع استخدام طبيعي، غالباً يتجاوز 5 سنوات بسهولة."
+)
+LIFESPAN_FACTS_EN = (
+    "⏳ Device lifespan depends on usage (charging cycles, heat, intensity).\n"
+    "With normal use and care, it typically lasts 5+ years."
+)
+
+def is_arabic(text: str) -> bool:
+    return bool(ARABIC_RE.search(text or ""))
+
+def detect_language_simple(text: str) -> str:
+    arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text or ""))
+    english_chars = len(re.findall(r'[a-zA-Z]', text or ""))
+    return 'ar' if arabic_chars > english_chars else 'en'
+
+def stable_language(
+    current_text: str,
+    conversation_history: Optional[List[Dict]] = None
+) -> str:
+    """
+    Keep language stable:
+    - Use last user language from history
+    - Switch only if user explicitly asks OR current text is clearly the other language
+    """
+    t = (current_text or "").lower()
+
+    # explicit user request
+    if any(x in t for x in ["بالانجليزي", "بالإنجليزي", "english please", "in english", "speak english"]):
+        return "en"
+    if any(x in t for x in ["بالعربي", "بالعربية", "arabic please", "in arabic", "speak arabic"]):
+        return "ar"
+
+    cur = detect_language_simple(current_text)
+
+    last_user_lang = None
+    if conversation_history:
+        for msg in reversed(conversation_history):
+            if msg.get("role") == "user":
+                last_user_lang = detect_language_simple(msg.get("content", ""))
+                break
+
+    if not last_user_lang:
+        return cur
+
+    if last_user_lang != cur:
+        # strong switch signals
+        if cur == "ar" and is_arabic(current_text) and len(current_text) >= 8:
+            return "ar"
+        if cur == "en" and re.search(r"[a-zA-Z]{6,}", current_text or ""):
+            return "en"
+        return last_user_lang
+
+    return cur
+
+# Greeting rules
+SALAM_RE = re.compile(r"(السلام عليكم(?:\s*و\s*رحمة الله(?:\s*و\s*بركاته)?)?)", re.IGNORECASE)
+EN_GREETING_RE = re.compile(r"\b(hi|hello|hey|good (morning|evening)|howdy)\b", re.IGNORECASE)
+AR_GREETING_RE = re.compile(r"\b(هلا|هلا والله|مرحبا|يا هلا|السلام)\b", re.IGNORECASE)
+
+def is_probably_just_greeting(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if len(t) <= 35 and (SALAM_RE.search(t) or EN_GREETING_RE.search(t) or AR_GREETING_RE.search(t)):
+        return True
+    return False
+
+def greeting_reply(text: str, lang: str) -> str:
+    t = (text or "").strip()
+    if SALAM_RE.search(t):
+        return (
+            "وعليكم السلام ورحمة الله وبركاته 🤍🤍\n"
+            "هلا فيك! أنا سمورتي 😊 مساعد ذكي (تحت التطوير) في متجر SMART — عطِني فرصة وأضبطها معك 😄\n"
+            "وش تبي نختار لك اليوم؟"
+        )
+    if lang == "en":
+        return (
+            "Hey! 😊 I’m Smorti — an AI assistant (still under development) at SMART store.\n"
+            "Give me a chance and I’ll get smarter with your feedback 😄\n"
+            "What are you looking for today?"
+        )
+    return (
+        "يا هلا ومرحبا 😊 أنا سمورتي — مساعد ذكي (تحت التطوير) في متجر SMART.\n"
+        "عطِني فرصة وبكون خفيف دم ومفيد بنفس الوقت 😄\n"
+        "وش تبي اليوم؟"
+    )
 
 # ============================================
-# 2. CUSTOM EXCEPTION CLASSES
+# 3) EXCEPTIONS
 # ============================================
 
 class SmortiBaseException(Exception):
-    """Base exception for all Smorti errors"""
     def __init__(self, message: str, user_message_ar: str, user_message_en: str):
         self.message = message
         self.user_message_ar = user_message_ar
         self.user_message_en = user_message_en
         super().__init__(self.message)
 
-
 class GroqAPIError(SmortiBaseException):
-    """Groq/Llama API failures"""
     def __init__(self, message: str, original_error: Optional[Exception] = None):
         self.original_error = original_error
         super().__init__(
             message,
-            "عذراً، حصل خطأ مؤقت مع النظام 🙏 جرب مرة ثانية",
+            "عذراً، صار خطأ مؤقت بالنظام 🙏 جرب مرة ثانية",
             "Sorry, a temporary system error occurred 🙏 Please try again"
         )
 
-
 class GroqRateLimitError(SmortiBaseException):
-    """Groq rate limit exceeded"""
     def __init__(self, message: str):
         super().__init__(
             message,
-            "عذراً، الطلبات كثيرة حالياً. انتظر ثانية وحاول مرة ثانية 😊",
+            "عذراً، الطلبات كثيرة حالياً. انتظر شوي وجرب مرة ثانية 😊",
             "Sorry, too many requests. Wait a moment and try again 😊"
         )
 
-
 class CatalogLoadError(SmortiBaseException):
-    """Product catalog/CSV loading issues"""
     def __init__(self, message: str):
         super().__init__(
             message,
-            "ما قدرت أوصل للكتالوج حالياً 😔 راح أوجهك للموقع",
+            "ما قدرت أوصل للكتالوج حالياً 😔 خلّني أوجهك للموقع",
             "Cannot access catalog right now 😔 I'll direct you to the website"
         )
 
-
 class EmptyInputError(SmortiBaseException):
-    """Empty user input"""
     def __init__(self):
         super().__init__(
             "Empty user input",
@@ -89,13 +223,11 @@ class EmptyInputError(SmortiBaseException):
             "Hello! 😊 How can I help you?"
         )
 
-
 # ============================================
-# 3. RETRY DECORATOR FOR GROQ API
+# 4) RETRY DECORATOR
 # ============================================
 
 def retry_groq_call(max_attempts=3, delay=2, backoff=2):
-    """Retry decorator for Groq API calls with exponential backoff"""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
@@ -117,10 +249,7 @@ def retry_groq_call(max_attempts=3, delay=2, backoff=2):
                 except GroqAPIError as e:
                     last_error = e
                     if attempt == max_attempts:
-                        logger.error(f"Max retries reached for {func.__name__}")
                         raise
-
-                    logger.warning(f"Attempt {attempt}/{max_attempts} failed. Retrying in {current_delay}s...")
                     time.sleep(current_delay)
                     current_delay *= backoff
                     attempt += 1
@@ -135,9 +264,8 @@ def retry_groq_call(max_attempts=3, delay=2, backoff=2):
         return wrapper
     return decorator
 
-
 # ============================================
-# 4. GROQ API ERROR HANDLING
+# 5) GROQ API CALL
 # ============================================
 
 @retry_groq_call(max_attempts=3, delay=2)
@@ -145,10 +273,9 @@ def call_groq_api(
     prompt: str,
     system_prompt: str,
     conversation_history: Optional[List[Dict]] = None,
-    temperature: float = 0.3,
-    max_tokens: int = 800
+    temperature: float = 0.25,
+    max_tokens: int = 850
 ) -> str:
-    """Call Groq API with comprehensive error handling"""
     try:
         from groq import Groq
 
@@ -159,15 +286,14 @@ def call_groq_api(
         client = Groq(api_key=api_key)
 
         messages = [{"role": "system", "content": system_prompt}]
-
         if conversation_history:
             messages.extend(conversation_history)
-
         messages.append({"role": "user", "content": prompt})
 
-        # Call API (using updated model)
+        model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model_name,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -176,362 +302,277 @@ def call_groq_api(
         )
 
         ai_response = response.choices[0].message.content
-
-        if not ai_response or ai_response.strip() == "":
+        if not ai_response or not ai_response.strip():
             raise GroqAPIError("Empty response from Groq API")
 
-        logger.info(f"✓ Groq API call successful ({len(ai_response)} chars)")
         return ai_response.strip()
 
     except Exception as e:
-        error_msg = str(e).lower()
-
-        if 'rate_limit' in error_msg or 'rate limit' in error_msg or '429' in error_msg:
-            logger.error(f"Rate limit exceeded: {e}")
+        msg = str(e).lower()
+        if 'rate_limit' in msg or '429' in msg:
             raise GroqRateLimitError(str(e))
-
-        elif 'api key' in error_msg or '401' in error_msg or 'unauthorized' in error_msg:
-            logger.error(f"Authentication error: {e}")
+        if 'api key' in msg or '401' in msg or 'unauthorized' in msg:
             raise GroqAPIError(f"Invalid API key: {e}", e)
-
-        elif 'timeout' in error_msg or 'timed out' in error_msg:
-            logger.error(f"Groq API timeout: {e}")
+        if 'timeout' in msg or 'timed out' in msg:
             raise GroqAPIError(f"API timeout: {e}", e)
-
-        elif '503' in error_msg or '502' in error_msg or 'service unavailable' in error_msg:
-            logger.error(f"Groq service unavailable: {e}")
-            raise GroqAPIError(f"Service temporarily unavailable: {e}", e)
-
-        else:
-            logger.error(f"Groq API error: {e}")
-            raise GroqAPIError(f"API error: {e}", e)
-
+        if '503' in msg or '502' in msg:
+            raise GroqAPIError(f"Service unavailable: {e}", e)
+        raise GroqAPIError(f"API error: {e}", e)
 
 # ============================================
-# 5. ENHANCED CATALOG WITH SMART SEARCH
+# 6) PRODUCT CATALOG
 # ============================================
 
 class ProductCatalog:
-    """Enhanced product catalog with fuzzy matching and comparisons"""
-
     def __init__(self, csv_path: str, descriptions_txt_path: Optional[str] = None):
         self.csv_path = csv_path
         self.descriptions_txt_path = descriptions_txt_path
-        self.df = None
-        self.products = None
-        self.product_descriptions = {}
-        self.last_loaded = None
+        self.df: Optional[pd.DataFrame] = None
+        self.products: Optional[List[Dict[str, Any]]] = None
+        self.last_loaded: Optional[datetime] = None
 
     def load(self, force_reload: bool = False) -> List[Dict[str, Any]]:
-        """Load product catalog from CSV with validation"""
         if self.products is not None and not force_reload:
-            logger.info(f"Using cached catalog ({len(self.products)} products)")
             return self.products
 
-        try:
-            if not os.path.exists(self.csv_path):
-                raise CatalogLoadError(f"Catalog file not found: {self.csv_path}")
+        if not os.path.exists(self.csv_path):
+            raise CatalogLoadError(f"Catalog file not found: {self.csv_path}")
 
-            logger.info(f"Loading catalog from {self.csv_path}...")
+        try:
             self.df = pd.read_csv(self.csv_path, encoding='utf-8')
-
-            if self.df.empty:
-                raise CatalogLoadError("Catalog file is empty")
-
-            # Validate required columns
-            required_columns = ['name_en', 'name_ar']
-            missing = [col for col in required_columns if col not in self.df.columns]
-
-            if missing:
-                logger.error(f"Missing required columns: {missing}")
-                # Don't fail, just warn
-                logger.warning("Continuing with available columns")
-
-            logger.info(f"Catalog columns: {list(self.df.columns)}")
-
-            # Handle null values gracefully (matching your CSV columns)
-            fill_values = {
-                'price_sar': 0,
-                'old_price_sar': 0,
-                'product_url': '',
-                'category_link': '',
-                'short_desc': '',
-                'availability': 'unknown',
-                'category': 'general',
-                'screen_size_in': '',
-                'display_type': '',
-                'ram_gb': '',
-                'storage_gb': '',
-                'connectivity': '',
-                'item_type': '',
-                'resolution_px': '',
-                'ppi': '',
-                'cpu': '',
-                'os': '',
-                'bluetooth': '',
-                'wifi': '',
-                'Battery_mah': '',
-                'audio_jack': '',
-                'Micro_sd_slot': ''
-            }
-
-            for col, default_val in fill_values.items():
-                if col in self.df.columns:
-                    self.df[col] = self.df[col].fillna(default_val)
-
-            # Remove duplicates based on product_id if exists
-            if 'product_id' in self.df.columns:
-                original_count = len(self.df)
-                self.df = self.df.drop_duplicates(subset=['product_id'], keep='first')
-                removed = original_count - len(self.df)
-                if removed > 0:
-                    logger.warning(f"Removed {removed} duplicate products")
-
-            self.products = self.df.to_dict('records')
-            self.last_loaded = datetime.now()
-
-            logger.info(f"✓ Loaded {len(self.products)} products successfully")
-
-            # Load descriptions if available
-            if self.descriptions_txt_path and os.path.exists(self.descriptions_txt_path):
-                self._load_descriptions()
-
-            return self.products
-
-        except pd.errors.EmptyDataError:
-            raise CatalogLoadError("Catalog file is empty or corrupted")
-
-        except pd.errors.ParserError as e:
-            raise CatalogLoadError(f"Failed to parse CSV: {e}")
-
-        except UnicodeDecodeError as e:
-            raise CatalogLoadError(f"Encoding error (try UTF-8): {e}")
-
         except Exception as e:
-            if isinstance(e, CatalogLoadError):
-                raise
-            logger.error(f"Unexpected catalog error: {e}")
-            raise CatalogLoadError(f"Failed to load catalog: {e}")
+            raise CatalogLoadError(f"Failed to read CSV: {e}")
 
-    def _load_descriptions(self):
-        """Load product descriptions from text file"""
-        try:
-            with open(self.descriptions_txt_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+        if self.df is None or self.df.empty:
+            raise CatalogLoadError("Catalog file is empty")
 
-            # Parse descriptions (you can adjust this based on your txt format)
-            logger.info(f"Loaded product descriptions from {self.descriptions_txt_path}")
-            self.product_descriptions_text = content
+        # Fill nulls defensively
+        fill_values = {
+            'price_sar': 0,
+            'old_price_sar': 0,
+            'product_url': '',
+            'category_link': '',
+            'short_desc': '',
+            'availability': 'unknown',
+            'category': 'general',
+            'screen_size_in': '',
+            'display_type': '',
+            'ram_gb': '',
+            'storage_gb': '',
+            'connectivity': '',
+            'item_type': '',
+            'resolution_px': '',
+            'ppi': '',
+            'cpu': '',
+            'os': '',
+            'bluetooth': '',
+            'wifi': '',
+            'Battery_mah': '',
+            'audio_jack': '',
+            'Micro_sd_slot': ''
+        }
+        for col, default_val in fill_values.items():
+            if col in self.df.columns:
+                self.df[col] = self.df[col].fillna(default_val)
 
-        except Exception as e:
-            logger.warning(f"Could not load descriptions: {e}")
+        if 'product_id' in self.df.columns:
+            self.df = self.df.drop_duplicates(subset=['product_id'], keep='first')
+
+        self.products = self.df.to_dict('records')
+        self.last_loaded = datetime.now()
+        logger.info(f"✓ Loaded {len(self.products)} products")
+        return self.products
+
+    def _score_product(self, product: Dict[str, Any], terms: List[str]) -> int:
+        score = 0
+        fields = [
+            str(product.get('name_en', '')).lower(),
+            str(product.get('name_ar', '')).lower(),
+            str(product.get('short_desc', '')).lower(),
+            str(product.get('keywords', '')).lower(),
+            str(product.get('brand', '')).lower(),
+            str(product.get('series', '')).lower(),
+            str(product.get('category', '')).lower(),
+            str(product.get('item_type', '')).lower(),
+        ]
+        joined = " | ".join(fields)
+        for t in terms:
+            if not t:
+                continue
+            if t in str(product.get('name_en', '')).lower(): score += 4
+            if t in str(product.get('name_ar', '')).lower(): score += 4
+            if t in str(product.get('series', '')).lower(): score += 3
+            if t in str(product.get('brand', '')).lower(): score += 2
+            if t in joined: score += 1
+        return score
 
     def search_products(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Enhanced fuzzy search with better matching"""
-        try:
-            if self.products is None:
-                self.load()
+        if self.products is None:
+            self.load()
 
-            query_lower = query.lower()
+        q = (query or "").lower()
+        terms = re.findall(r"[a-zA-Z0-9\u0600-\u06FF]+", q)
 
-            # Extract key search terms
-            search_terms = re.findall(r'\w+', query_lower)
+        scored: List[Tuple[int, Dict[str, Any]]] = []
+        for p in self.products or []:
+            s = self._score_product(p, terms)
+            if s > 0:
+                scored.append((s, p))
 
-            results = []
-            scores = []
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [p for _, p in scored[:limit]]
 
-            for product in self.products:
-                score = 0
-
-                # Get searchable fields
-                name_en = str(product.get('name_en', '')).lower()
-                name_ar = str(product.get('name_ar', '')).lower()
-                desc = str(product.get('short_desc', '')).lower()
-                keywords = str(product.get('keywords', '')).lower()
-                brand = str(product.get('brand', '')).lower()
-                series = str(product.get('series', '')).lower()
-
-                # Score matches
-                for term in search_terms:
-                    if term in name_en: score += 3
-                    if term in name_ar: score += 3
-                    if term in series: score += 2
-                    if term in brand: score += 2
-                    if term in keywords: score += 1
-                    if term in desc: score += 1
-
-                # Exact series match bonus
-                if query_lower in series or series in query_lower:
-                    score += 5
-
-                if score > 0:
-                    results.append(product)
-                    scores.append(score)
-
-            # Sort by score
-            if results:
-                sorted_results = [x for _, x in sorted(zip(scores, results), key=lambda pair: pair[0], reverse=True)]
-                return sorted_results[:limit]
-
-            return []
-
-        except Exception as e:
-            logger.error(f"Product search error: {e}")
-            return []
-
-    def get_accessories_for_product(self, product_name: str) -> List[Dict[str, Any]]:
-        """Find compatible accessories for a product"""
-        try:
-            if self.products is None:
-                self.load()
-
-            accessories = []
-            product_name_lower = product_name.lower()
-
-            # Extract series/model info
-            series_match = None
-            if 'palma 2 pro' in product_name_lower:
-                series_match = 'palma 2 pro'
-            elif 'palma 2' in product_name_lower:
-                series_match = 'palma 2'
-            elif 'note air5 c' in product_name_lower or 'note air 5 c' in product_name_lower:
-                series_match = 'note air5 c'
-            elif 'go 7' in product_name_lower:
-                series_match = 'go 7'
-            elif 'go 6' in product_name_lower:
-                series_match = 'go 6'
-
-            if not series_match:
-                return []
-
-            # Search for accessories
-            for product in self.products:
-                item_type = str(product.get('item_type', '')).lower()
-                name_en = str(product.get('name_en', '')).lower()
-                name_ar = str(product.get('name_ar', '')).lower()
-
-                # Check if it's an accessory
-                if any(acc_type in item_type or acc_type in name_en or acc_type in name_ar
-                       for acc_type in ['case', 'cover', 'stylus', 'pen', 'tip', 'remote', 'حافظة', 'جراب', 'قلم']):
-
-                    # Check if compatible with the series
-                    if series_match in name_en.lower() or series_match in name_ar.lower():
-                        accessories.append(product)
-
-            return accessories
-
-        except Exception as e:
-            logger.error(f"Accessory search error: {e}")
-            return []
-
+    def filter_by_type(self, products: List[Dict[str, Any]], include_any: List[str]) -> List[Dict[str, Any]]:
+        keys = [k.lower() for k in include_any]
+        out = []
+        for p in products:
+            blob = " ".join([
+                str(p.get('item_type', '')).lower(),
+                str(p.get('category', '')).lower(),
+                str(p.get('name_en', '')).lower(),
+                str(p.get('name_ar', '')).lower(),
+                str(p.get('short_desc', '')).lower(),
+                str(p.get('keywords', '')).lower(),
+            ])
+            if any(k in blob for k in keys):
+                out.append(p)
+        return out
 
 # ============================================
-# 6. INPUT VALIDATION
+# 7) SAFETY: PRODUCT CONTEXT + URL SCRUBBING
 # ============================================
 
-def validate_user_input(user_input: str) -> str:
-    """Validate and sanitize user input"""
-    if not user_input:
-        raise EmptyInputError()
-
-    cleaned = user_input.strip()
-
-    if not cleaned:
-        raise EmptyInputError()
-
-    if len(cleaned) > 5000:
-        logger.warning(f"Input too long ({len(cleaned)} chars), truncating")
-        cleaned = cleaned[:5000]
-
-    return cleaned
-
-
-# ============================================
-# 7. LANGUAGE DETECTION
-# ============================================
-
-def detect_language(text: str) -> str:
-    """Detect if text is primarily Arabic or English"""
-    arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text))
-    english_chars = len(re.findall(r'[a-zA-Z]', text))
-
-    if arabic_chars > english_chars:
-        return 'ar'
-    return 'en'
-
-
-# ============================================
-# 8. PRODUCT CONTEXT BUILDER
-# ============================================
-
-def build_product_context(products: List[Dict], language: str = 'ar', include_accessories: bool = False) -> str:
-    """Build detailed product context for AI"""
+def build_product_context(products: List[Dict[str, Any]], language: str) -> str:
     if not products:
-        if language == 'ar':
-            return "\n\n=== لم يتم العثور على منتجات مطابقة ===\nقل للمستخدم أنك لا تملك معلومات دقيقة ووجهه للموقع\n"
-        else:
-            return "\n\n=== NO MATCHING PRODUCTS FOUND ===\nTell user you don't have exact info and direct to website\n"
+        if language == "ar":
+            return (
+                "\n\n=== NO_MATCH ===\n"
+                "لم يتم العثور على منتجات مطابقة داخل الكتالوج.\n"
+                f"وجّه العميل للموقع: {OFFICIAL_LINKS['store']}\n"
+                "ممنوع اختراع منتجات أو روابط.\n"
+            )
+        return (
+            "\n\n=== NO_MATCH ===\n"
+            "No matching products found in the catalog.\n"
+            f"Direct to: {OFFICIAL_LINKS['store']}\n"
+            "Do NOT invent products or links.\n"
+        )
 
-    context = "\n\n=== AVAILABLE PRODUCTS (USE ONLY THIS DATA) ===\n"
+    def g(p: Dict[str, Any], k: str, default="N/A"):
+        v = p.get(k, default)
+        return default if v is None or v == "" else v
 
-    for i, product in enumerate(products, 1):
-        context += f"\n--- Product {i} ---\n"
-        context += f"Name (EN): {product.get('name_en', 'N/A')}\n"
-        context += f"Name (AR): {product.get('name_ar', 'N/A')}\n"
-        context += f"Brand: {product.get('brand', 'N/A')}\n"
-        context += f"Series: {product.get('series', 'N/A')}\n"
-        context += f"Price: {product.get('price_sar', 'N/A')} SAR\n"
+    ctx = "\n\n=== AVAILABLE PRODUCTS (USE ONLY THIS DATA) ===\n"
+    for i, p in enumerate(products, 1):
+        ctx += f"\n--- Product {i} ---\n"
+        ctx += f"name_en: {g(p,'name_en')}\n"
+        ctx += f"name_ar: {g(p,'name_ar')}\n"
+        ctx += f"brand: {g(p,'brand')}\n"
+        ctx += f"series: {g(p,'series')}\n"
+        ctx += f"category: {g(p,'category')}\n"
+        ctx += f"item_type: {g(p,'item_type')}\n"
+        ctx += f"short_desc: {g(p,'short_desc')}\n"
+        ctx += f"price_sar: {g(p,'price_sar')}\n"
+        ctx += f"old_price_sar: {g(p,'old_price_sar')}\n"
+        ctx += f"screen_size_in: {g(p,'screen_size_in')}\n"
+        ctx += f"display_type: {g(p,'display_type')}\n"
+        ctx += f"ram_gb: {g(p,'ram_gb')}\n"
+        ctx += f"storage_gb: {g(p,'storage_gb')}\n"
+        ctx += f"resolution_px: {g(p,'resolution_px')}\n"
+        ctx += f"ppi: {g(p,'ppi')}\n"
+        ctx += f"cpu: {g(p,'cpu')}\n"
+        ctx += f"os: {g(p,'os')}\n"
+        ctx += f"wifi: {g(p,'wifi')}\n"
+        ctx += f"bluetooth: {g(p,'bluetooth')}\n"
+        ctx += f"Battery_mah: {g(p,'Battery_mah')}\n"
+        ctx += f"connectivity: {g(p,'connectivity')}\n"
+        ctx += f"product_url: {g(p,'product_url')}\n"
+        ctx += f"category_link: {g(p,'category_link')}\n"
+        ctx += f"availability: {g(p,'availability')}\n"
 
-        if product.get('old_price_sar') and float(product.get('old_price_sar', 0)) > 0:
-            context += f"Old Price: {product.get('old_price_sar')} SAR (Discount available!)\n"
-            savings = float(product.get('old_price_sar', 0)) - float(product.get('price_sar', 0))
-            if savings > 0:
-                context += f"You Save: {savings:.2f} SAR\n"
+    ctx += "\n=== HARD RULES ===\n"
+    ctx += "- Use ONLY the products above.\n"
+    ctx += "- NEVER invent any product names, prices, specs, or URLs.\n"
+    ctx += "- If a spec is not shown above, say: (غير مذكور في الكتالوج) / (Not listed in our catalog).\n"
+    ctx += "- Only include URLs that appear in product_url/category_link above, or official links.\n"
+    ctx += "- NEVER output placeholders like [رقم الهاتف] or [email].\n"
+    ctx += "==================\n"
+    return ctx
 
-        context += f"Screen Size: {product.get('screen_size_in', 'N/A')} inches\n"
-        context += f"Display Type: {product.get('display_type', 'N/A')}\n"
-        context += f"RAM: {product.get('ram_gb', 'N/A')} GB\n"
-        context += f"Storage: {product.get('storage_gb', 'N/A')} GB\n"
-        context += f"Resolution: {product.get('resolution_px', 'N/A')}\n"
-        context += f"PPI: {product.get('ppi', 'N/A')}\n"
-        context += f"CPU: {product.get('cpu', 'N/A')}\n"
-        context += f"OS: {product.get('os', 'N/A')}\n"
-        context += f"Bluetooth: {product.get('bluetooth', 'N/A')}\n"
-        context += f"WiFi: {product.get('wifi', 'N/A')}\n"
-        context += f"Battery: {product.get('Battery_mah', 'N/A')} mAh\n"
-        context += f"Audio Jack: {product.get('audio_jack', 'N/A')}\n"
-        context += f"MicroSD Slot: {product.get('Micro_sd_slot', 'N/A')}\n"
-        context += f"Availability: {product.get('availability', 'N/A')}\n"
-        context += f"Product URL: {product.get('product_url', 'N/A')}\n"
+def allowed_urls_from_products(products: List[Dict[str, Any]]) -> set:
+    allowed = set(OFFICIAL_LINKS.values())
+    for p in products or []:
+        u1 = str(p.get("product_url", "")).strip()
+        u2 = str(p.get("category_link", "")).strip()
+        if u1.startswith("http"):
+            allowed.add(u1)
+        if u2.startswith("http"):
+            allowed.add(u2)
+    return allowed
 
-    context += "\n=== CRITICAL INSTRUCTIONS ===\n"
-    context += "- ONLY use data from products listed above\n"
-    context += "- NEVER invent prices, specs, or details\n"
-    context += "- Always include product URL when available\n"
-    context += "- Compare products if multiple options exist\n"
-    context += "- Explain technical specs in simple terms\n"
-    context += "- Mention discounts/savings if applicable\n"
-    context += "=================================\n"
+def scrub_unknown_urls(text: str, allowed: set) -> str:
+    def repl(m):
+        url = m.group(0).rstrip(").,，。!؟!?]")
+        return url if url in allowed else OFFICIAL_LINKS["store"]
+    return URL_RE.sub(repl, text or "")
 
-    return context
+# Also scrub placeholder contact fields
+PLACEHOLDER_CONTACT_RE = re.compile(r"\[(رقم الهاتف|عنوان البريد الإلكتروني|عنوان الموقع الإلكتروني|اسم حسابنا.*?)\]", re.IGNORECASE)
 
+def scrub_placeholders(text: str) -> str:
+    return PLACEHOLDER_CONTACT_RE.sub(OFFICIAL_LINKS["whatsapp"], text or "")
 
 # ============================================
-# 9. FALLBACK RESPONSE HANDLER
+# 8) INTENTS
+# ============================================
+
+def has_any(text: str, keys: List[str]) -> bool:
+    t = (text or "").lower()
+    return any(k.lower() in t for k in keys)
+
+def is_installment_query(text: str) -> bool:
+    return has_any(text, ["تقسيط", "تمارا", "تابي", "تابى", "mispay", "ميس باي", "installment", "tabby", "tamara"])
+
+def is_battery_query(text: str) -> bool:
+    return has_any(text, ["بطارية", "battery", "تشحن", "شحن", "يدوم", "lasts", "مدة البطارية"])
+
+def is_lifespan_query(text: str) -> bool:
+    return has_any(text, ["عمر", "يعيش", "كم سنة", "virtual age", "lifespan", "how long will it last", "يدوم كم"])
+
+def is_programs_query(text: str) -> bool:
+    return has_any(text, ["ترخيص", "رخصة", "license", "software", "برنامج", "برامج", "spss", "matlab", "solidworks", "arcgis", "autocad"])
+
+def is_monitor_or_screen_query(text: str) -> bool:
+    # Treat generic "شاشة" as screen, not only BOOX
+    return has_any(text, [
+        "monitor", "monitors", "شاشة", "شاشه", "screen", "display", "لوحة عرض",
+        "تفاعلية", "interactive", "sparq", "سبارك"
+    ])
+
+def is_gaming_query(text: str) -> bool:
+    return has_any(text, ["gaming", "قيمينق", "قيمينج", "fps", "هرتز", "ps5", "xbox", "للألعاب", "للعب", "pc gaming"])
+
+def is_boox_query(text: str) -> bool:
+    return has_any(text, [
+        "boox", "بوكس", "قارئ", "ebook", "e-book", "eink", "e-ink",
+        "note air", "palma", "go 6", "go 7", "go color", "tab x", "tab ultra"
+    ])
+
+def is_poetry_or_story_request(text: str) -> bool:
+    return has_any(text, ["قصيدة", "شعر", "قافية", "بيت شعر", "قصة", "سرد", "poem", "poetry", "story"])
+
+def is_contact_query(text: str) -> bool:
+    return has_any(text, ["تواصل", "اتواصل", "رقم", "واتساب", "whatsapp", "contact", "reach", "support"])
+
+# ============================================
+# 9) FALLBACK
 # ============================================
 
 def get_fallback_response(error: SmortiBaseException, language: str = 'ar') -> str:
-    """Get user-friendly error message"""
-    logger.error(f"Returning fallback for {type(error).__name__}: {error.message}")
-
-    if language == 'ar':
-        return error.user_message_ar
-    else:
-        return error.user_message_en
-
+    return error.user_message_ar if language == 'ar' else error.user_message_en
 
 # ============================================
-# 10. MAIN CHAT HANDLER WITH ANTI-HALLUCINATION
+# 10) MAIN CHAT HANDLER (USED BY STREAMLIT)
 # ============================================
 
 def handle_chat_message(
@@ -541,111 +582,209 @@ def handle_chat_message(
     conversation_history: Optional[List[Dict]] = None,
     language: str = 'auto'
 ) -> str:
-    """Main handler with anti-hallucination and smart product matching"""
+    """
+    Core rules:
+    - NEVER invent products/links/specs.
+    - Screens: recommend monitors + interactive screens from CSV (even if not gaming-first),
+      and mention they can run games but may not be “gaming-first”.
+    - If user says “شاشة” don’t default to BOOX.
+    - Software/licenses: describe generally what it does, but don’t invent license terms/specs.
+    - Contact: only official links; no placeholders.
+    - Humor: playful + light sarcasm, mention AI under development.
+    - Poetry/story: more Arabic literature flair allowed, but NO invented specs/links.
+    """
     try:
-        # Validate input
-        try:
-            cleaned_input = validate_user_input(user_input)
-        except EmptyInputError as e:
-            return get_fallback_response(e, language)
+        if user_input is None or not user_input.strip():
+            raise EmptyInputError()
 
-        # Auto-detect language
-        if language == 'auto':
-            language = detect_language(cleaned_input)
+        cleaned = user_input.strip()
+        if len(cleaned) > 5000:
+            cleaned = cleaned[:5000]
 
-        logger.info(f"User ({language}): {cleaned_input[:100]}...")
+        if language == "auto":
+            language = stable_language(cleaned, conversation_history)
 
-        # Load catalog
+        # Greeting override (your strict rule)
+        if is_probably_just_greeting(cleaned):
+            return greeting_reply(cleaned, language)
+
+        # Load catalog best-effort
         try:
             catalog.load()
         except CatalogLoadError as e:
-            logger.error(f"Catalog error: {e.message}")
-            logger.warning("Continuing without catalog access")
+            logger.error(f"Catalog load error: {e.message}")
 
-        # Build enhanced prompt with product context
+        # Build search results by intent
+        search_results: List[Dict[str, Any]] = []
         catalog_context = ""
+        allowed_urls = set(OFFICIAL_LINKS.values())
 
-        # Detect if user is asking about products
-        product_keywords = [
-            'جهاز', 'بوكس', 'boox', 'قو', 'go', 'سعر', 'price', 'بكم', 'كم سعر',
-            'palma', 'note', 'air', 'tab', 'بالما', 'نوت', 'تابلت', 'قارئ',
-            'مواصفات', 'specs', 'specification', 'compare', 'قارن', 'difference',
-            'أفضل', 'best', 'recommend', 'اقترح', 'suggest', 'شاشة', 'screen',
-            'ذاكرة', 'memory', 'ram', 'storage', 'بطارية', 'battery'
-        ]
-
-        is_product_query = any(keyword in cleaned_input.lower() for keyword in product_keywords)
-
-        if is_product_query:
-            try:
-                search_results = catalog.search_products(cleaned_input, limit=8)
-
-                if search_results:
-                    catalog_context = build_product_context(search_results, language)
-
-                    # Check for accessory queries
-                    if any(acc in cleaned_input.lower() for acc in ['حافظة', 'جراب', 'قلم', 'case', 'cover', 'stylus', 'pen', 'accessories', 'اكسسوارات']):
-                        # Add accessory info
-                        catalog_context += "\n=== ACCESSORIES AVAILABLE ===\n"
-                        catalog_context += "Check for compatible cases, styluses, and covers for each device.\n"
-                        catalog_context += "Mention accessories if user asks about them.\n"
-
-                    logger.info(f"Found {len(search_results)} matching products")
-                else:
-                    if language == 'ar':
-                        catalog_context = "\n\n=== لم يتم العثور على منتجات مطابقة ===\n"
-                        catalog_context += "قل للمستخدم بأدب أنك لا تملك معلومات دقيقة عن هذا المنتج\n"
-                        catalog_context += "وجّهه لزيارة الموقع: https://shop.smart.sa/ar\n"
-                        catalog_context += "أو تصفح الأقسام: https://shop.smart.sa/ar/category/EdyrGY\n"
-                        catalog_context += "لا تخترع أي معلومات\n"
-                    else:
-                        catalog_context = "\n\n=== NO MATCHING PRODUCTS ===\n"
-                        catalog_context += "Politely tell user you don't have exact information\n"
-                        catalog_context += "Direct to website: https://shop.smart.sa/ar\n"
-                        catalog_context += "DO NOT invent any information\n"
-
-                    logger.warning(f"No products found for: {cleaned_input[:50]}")
-
-            except Exception as e:
-                logger.error(f"Catalog search error: {e}")
-
-        # Build enhanced prompt
-        enhanced_prompt = cleaned_input + catalog_context
-
-        # Call Groq API
-        try:
-            response = call_groq_api(
-                prompt=enhanced_prompt,
-                system_prompt=system_prompt,
-                conversation_history=conversation_history,
-                temperature=0.3,  # Low temp for factual accuracy
-                max_tokens=800
+        # Contact queries: answer with official links (still model-generated style, but forced info)
+        if is_contact_query(cleaned):
+            if language == "ar":
+                return (
+                    "أكيد 🤍 تواصل معنا مباشرة عبر:\n"
+                    f"• واتساب: {OFFICIAL_LINKS['whatsapp']}\n"
+                    f"• المتجر: {OFFICIAL_LINKS['store']}\n"
+                    "أنا سمورتي (مساعد AI تحت التطوير) وإذا لخبطت… قلّي وأعدّل نفسي 😄"
+                )
+            return (
+                "Sure 🤍 You can reach us via:\n"
+                f"• WhatsApp: {OFFICIAL_LINKS['whatsapp']}\n"
+                f"• Store: {OFFICIAL_LINKS['store']}\n"
+                "I’m Smorti (an AI assistant under development) — if I mess up, tell me and I’ll improve 😄"
             )
 
-            logger.info(f"Smorti: {response[:100]}...")
-            return response
+        # Screens / monitors / interactive screens (generic “شاشة” comes here)
+        if is_monitor_or_screen_query(cleaned) or is_gaming_query(cleaned):
+            base = catalog.search_products(cleaned, limit=30) if hasattr(catalog, "search_products") else []
+            # filter for monitors + interactive screens
+            filtered = catalog.filter_by_type(
+                base,
+                include_any=["monitor", "thinkvision", "lenovo", "sparq", "interactive", "تفاعلية", "شاشة", "screen"]
+            )
+            if not filtered:
+                # fallback query: try to pull screens from catalog even if user didn’t specify
+                base2 = catalog.search_products("monitor شاشة sparq", limit=30)
+                filtered = catalog.filter_by_type(
+                    base2,
+                    include_any=["monitor", "thinkvision", "lenovo", "sparq", "interactive", "تفاعلية", "شاشة", "screen"]
+                )
+            search_results = filtered[:10]
 
-        except GroqRateLimitError as e:
-            return get_fallback_response(e, language)
+        # Programs/licenses
+        elif is_programs_query(cleaned):
+            base = catalog.search_products(cleaned, limit=20)
+            filtered = catalog.filter_by_type(base, include_any=["license", "ترخيص", "software", "برنامج", "program"])
+            search_results = (filtered or base)[:10]
 
-        except GroqAPIError as e:
-            return get_fallback_response(e, language)
+        # BOOX / reading
+        elif is_boox_query(cleaned):
+            base = catalog.search_products(cleaned, limit=20)
+            filtered = catalog.filter_by_type(base, include_any=["boox", "eink", "e-ink", "قارئ", "note", "palma", "go", "tab"])
+            search_results = (filtered or base)[:10]
+
+        # General product-y
+        else:
+            productish = has_any(cleaned, ["سعر", "price", "بكم", "كم سعر", "مواصفات", "spec", "قارن", "best", "recommend", "اقترح", "device", "جهاز", "شاشة", "monitor", "ترخيص", "license"])
+            if productish:
+                search_results = catalog.search_products(cleaned, limit=10)
+
+        # Build context
+        if search_results:
+            catalog_context = build_product_context(search_results, language)
+            allowed_urls = allowed_urls_from_products(search_results)
+        else:
+            # if user likely asked for products but none found -> NO_MATCH rules
+            if has_any(cleaned, ["boox", "بوكس", "شاشة", "monitor", "sparq", "تفاعلية", "ترخيص", "license", "برنامج", "سعر", "price"]):
+                catalog_context = build_product_context([], language)
+                allowed_urls = set(OFFICIAL_LINKS.values())
+
+        # Creativity settings
+        temp = 0.25
+        if is_poetry_or_story_request(cleaned):
+            # allow better poetry, but still with strict non-invention rules
+            temp = 0.70
+
+        # Business rules block (forces correct behavior but keeps response AI-generated)
+        if language == "ar":
+            business_rules = f"""
+=== BUSINESS FACTS (MUST BE CORRECT) ===
+- {INSTALLMENT_FACTS_AR}
+- {BATTERY_FACTS_AR}
+- {LIFESPAN_FACTS_AR}
+
+=== BEHAVIOR RULES (STRICT) ===
+1) أنت سمورتي، مساعد ذكاء اصطناعي في متجر SMART (تحت التطوير) — خفيف ظل ومفيد، مزح بسيط وسخرية خفيفة بدون قلة أدب.
+2) التزم بلغة العميل: إذا الكلام عربي رد عربي، وإذا إنجليزي رد إنجليزي. لا تغيّر فجأة بسبب كلمة واحدة.
+3) إذا العميل يقول السلام عليكم (كامل) رد عليه كامل مع قلوب بيضاء 🤍.
+4) الشاشات:
+   - إذا العميل يطلب "شاشة" أو "مونيتور" أو "شاشة ألعاب": اعرض المونيتور/الشاشات التفاعلية الموجودة في الكتالوج.
+   - قل بوضوح: (تقدر تلعب عليها ألعاب) لكن مو شرط تكون "Gaming-first" حسب المواصفات الموجودة.
+5) أجهزة BOOX:
+   - ممتازة للقراءة/الكتابة والعمل الخفيف.
+   - ليست مخصصة للـMedia-heavy مثل التابلت العادي بسبب طبيعة شاشة الحبر الإلكتروني.
+6) البرامج/التراخيص:
+   - اشرح بشكل عام ماذا يفعل البرنامج (بدون اختراع شروط ترخيص/أنواع اشتراك).
+   - إذا ما فيه تفاصيل ترخيص في الكتالوج قل: (غير مذكور في الكتالوج) ووجّه لرابط المنتج/قسم البرامج.
+7) ممنوع اختراع أي منتج أو رابط أو مواصفة.
+   - استخدم فقط بيانات AVAILABLE PRODUCTS.
+   - أي مواصفة غير موجودة في الكتالوج → قل: "غير مذكور في الكتالوج".
+8) ممنوع وضع placeholders مثل [رقم الهاتف] أو [email]. التواصل فقط عبر:
+   - واتساب: {OFFICIAL_LINKS['whatsapp']}
+   - المتجر: {OFFICIAL_LINKS['store']}
+9) لو طلب قصيدة/قصة: مسموح إبداع لغوي عالي، لكن بدون أرقام/مواصفات غير موجودة أو روابط غير موجودة.
+=============================
+"""
+        else:
+            business_rules = f"""
+=== BUSINESS FACTS (MUST BE CORRECT) ===
+- {INSTALLMENT_FACTS_EN}
+- {BATTERY_FACTS_EN}
+- {LIFESPAN_FACTS_EN}
+
+=== BEHAVIOR RULES (STRICT) ===
+1) You are Smorti, an AI assistant at SMART store (under development) — playful, lightly sarcastic, but always helpful and polite.
+2) Keep the user's language stable (Arabic/English). Don’t switch because of a single word.
+3) If the user greets in Arabic salam, respond properly and use white hearts 🤍.
+4) Screens:
+   - If the user asks for "screen/monitor/gaming screen": show ONLY monitors/interactive screens that exist in the catalog.
+   - Say clearly: it CAN run games, but it may not be gaming-first depending on catalog specs.
+5) BOOX:
+   - Great for reading/writing/light productivity.
+   - Not ideal for media-heavy viewing like normal tablets due to e-ink nature.
+6) Software/licenses:
+   - Explain what the software does at a high level, without inventing license terms/subscriptions.
+   - If not in catalog, say: "Not listed in our catalog" and point to official links.
+7) Never invent any product, URL, or spec.
+   - Use ONLY AVAILABLE PRODUCTS.
+   - If a spec is missing → say: "Not listed in our catalog."
+8) No placeholders like [phone] or [email]. Contact only:
+   - WhatsApp: {OFFICIAL_LINKS['whatsapp']}
+   - Store: {OFFICIAL_LINKS['store']}
+9) Poetry/story requests: higher creativity allowed, but no fake specs/links.
+=============================
+"""
+
+        enhanced_prompt = cleaned + "\n\n" + business_rules + "\n\n" + catalog_context
+
+        # Call model
+        response = call_groq_api(
+            prompt=enhanced_prompt,
+            system_prompt=system_prompt,
+            conversation_history=conversation_history,
+            temperature=temp,
+            max_tokens=900
+        )
+
+        # Safety post-processing
+        response = scrub_unknown_urls(response, allowed_urls)
+        response = scrub_placeholders(response)
+
+        return response
+
+    except EmptyInputError as e:
+        lang = 'ar' if is_arabic(user_input or "") else 'en'
+        return get_fallback_response(e, lang)
+
+    except GroqRateLimitError as e:
+        lang = language if language in ("ar", "en") else "ar"
+        return get_fallback_response(e, lang)
+
+    except GroqAPIError as e:
+        lang = language if language in ("ar", "en") else "ar"
+        return get_fallback_response(e, lang)
 
     except Exception as e:
         logger.critical(f"UNEXPECTED ERROR: {e}", exc_info=True)
-
-        if language == 'ar':
-            return "عذراً، حصل خطأ غير متوقع 😔 جرب مرة ثانية"
-        else:
-            return "Sorry, an unexpected error occurred 😔 Try again"
+        return "عذراً، صار خطأ غير متوقع 😔" if language == "ar" else "Sorry, an unexpected error occurred 😔"
 
 
 # ============================================
-# 11. SYSTEM HEALTH CHECK
+# 11) OPTIONAL: HEALTH CHECK (CLI)
 # ============================================
 
 def run_health_check(catalog_path: str) -> Dict[str, str]:
-    """Check system health"""
     health = {
         'timestamp': datetime.now().isoformat(),
         'groq_api': '❌ Not tested',
@@ -655,100 +794,57 @@ def run_health_check(catalog_path: str) -> Dict[str, str]:
     }
 
     try:
-        import pandas as pd
+        import pandas as _pd
         health['pandas'] = '✓ Installed'
     except ImportError:
         health['pandas'] = '❌ Not installed'
 
-    if os.getenv('GROQ_API_KEY'):
-        health['api_key'] = '✓ Found'
-    else:
-        health['api_key'] = '❌ Missing'
+    health['api_key'] = '✓ Found' if os.getenv('GROQ_API_KEY') else '❌ Missing'
 
     try:
-        catalog = ProductCatalog(catalog_path)
-        products = catalog.load()
-        health['catalog'] = f'✓ Loaded ({len(products)} products)'
+        cat = ProductCatalog(catalog_path)
+        prods = cat.load()
+        health['catalog'] = f'✓ Loaded ({len(prods)} products)'
     except Exception as e:
-        health['catalog'] = f'❌ Error: {str(e)[:50]}'
+        health['catalog'] = f'❌ Error: {str(e)[:80]}'
 
     try:
-        test_response = call_groq_api(
+        _ = call_groq_api(
             prompt="Say 'جاهز' in one word",
             system_prompt="You are a test bot.",
             temperature=0.1,
             max_tokens=10
         )
-        health['groq_api'] = f'✓ Working'
+        health['groq_api'] = '✓ Working'
     except Exception as e:
-        health['groq_api'] = f'❌ Error: {str(e)[:50]}'
+        health['groq_api'] = f'❌ Error: {str(e)[:80]}'
 
     return health
 
 
-# ============================================
-# 12. CLI TEST WITH ENHANCED SYSTEM PROMPT
-# ============================================
-
 def main():
-    """CLI testing with multi-language support"""
-
     print("=" * 60)
     print("🤖 SMORTI AI AGENT - LOCAL CLI TEST")
     print("=" * 60)
 
-    # Health check
     print("\n🏥 Running health check...")
     health = run_health_check('data/products_enriched.csv')
-    for component, status in health.items():
-        print(f"  {component}: {status}")
+    for k, v in health.items():
+        print(f"  {k}: {v}")
 
-    # Initialize catalog
     catalog = ProductCatalog('data/products_enriched.csv')
+    system_prompt = "You are Smorti, an AI assistant for SMART store. Follow the given rules."
+    hist: List[Dict[str, str]] = []
 
-    # Enhanced system prompt with strict anti-hallucination
-    system_prompt = """أنت سمورتي (Smorti)، مساعد الذكاء الاصطناعي لمتجر SMART.
+    while True:
+        user = input("\nYou: ").strip()
+        if user.lower() in ("exit", "quit"):
+            break
+        ans = handle_chat_message(user, catalog, system_prompt, hist, language="auto")
+        print("Smorti:", ans)
+        hist.append({"role": "user", "content": user})
+        hist.append({"role": "assistant", "content": ans})
 
-🎯 مهمتك:
-مساعدة العملاء في اختيار أجهزة BOOX (الأجهزة اللوحية والقراء الإلكترونية) بناءً على احتياجاتهم.
 
-🚨 قواعد صارمة - CRITICAL:
-1. ✋ لا تخترع أبداً أسعار أو مواصفات - استخدم فقط بيانات "AVAILABLE PRODUCTS"
-2. 🔗 دائماً أرفق رابط المنتج (product_url) عند توفره
-3. ❌ إذا لم تجد المنتج، قل ذلك بوضوح ووجه للموقع
-4. 📊 قارن بين الأجهزة بناءً على المواصفات الفعلية
-5. 💰 اذكر الخصومات (old_price - current_price) إذا وُجدت
-6. 🎒 اقترح الاكسسوارات المتوافقة (Cases/Stylus) للجهاز المطلوب
-7. 🌍 رد بنفس لغة العميل (عربي أو إنجليزي)
-
-📝 التعريف (أول رسالة فقط):
-عربي: "مرحباً! أنا سمورتي 😊، مساعدك الذكي في متجر SMART. وش أقدر أساعدك فيه اليوم؟"
-English: "Hello! I'm Smorti 😊, your AI assistant at SMART store. How can I help you today?"
-
-💡 شرح المواصفات بطريقة مبسطة:
-- Display Type: eink = حبر إلكتروني (مريح للعين)، color = ملون
-- RAM/Storage: كلما زاد = أداء أسرع وتخزين أكثر
-- Screen Size: حسب الاستخدام (6" للقراءة، 10"+ للكتابة والعمل)
-- Battery (mAh): كلما زاد = بطارية تدوم أطول
-- WiFi/Bluetooth: للاتصال بالإنترنت والأجهزة
-- MicroSD Slot: لزيادة التخزين
-- Audio Jack: لتوصيل سماعات سلكية
-
-🎒 الاكسسوارات المتوافقة:
-- Palma 2 Pro → حافظة مغناطيسية Palma 2 Pro
-- Note Air5 C → حافظة Note Air5 C + لوحة مفاتيح مغناطيسية
-- Go 7 → حافظة Go 7 Series
-- معظم الأجهزة → قلم InkSense Plus (للكتابة)
-
-أسلوب التواصل:
-- ودود وطبيعي مثل موظف سعودي محترف
-- ردود قصيرة وواضحة (WhatsApp-friendly)
-- بدون markdown ثقيل
-- إيموجي خفيف فقط 😊👌✨
-
-الروابط الرسمية:
-- المتجر: https://shop.smart.sa/ar
-- قسم الأجهزة: https://shop.smart.sa/ar/category/EdyrGY
-- واتساب: https://wa.me/966593440030
-- سياسة الإرجاع: https://shop.smart.sa/p/OYDNm
-- الضمان: https://shop.smart.sa/ar/p/ErDop"""
+if __name__ == "__main__":
+    main()
