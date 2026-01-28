@@ -1,6 +1,6 @@
 """
 Streamlit Web Interface for Smorti AI Assistant
-Version: v1.2
+Version: v1.21
 Run with: streamlit run streamlit_app.py
 """
 

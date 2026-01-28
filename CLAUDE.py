@@ -2,7 +2,7 @@
 Smorti AI Agent (CLAUDE.py) - v1.2
 Backend engine used by Streamlit app + local CLI.
 
-What’s new in v1.2 (based on your tests):
+What’s new in v1.21 (based on your tests):
 ✅ If user asks for "شاشة" (screen) it won’t default to BOOX only — it will look for Monitors + Interactive Screens too.
 ✅ For gaming: it will suggest monitors / interactive screens we actually have in the CSV, and clearly say they *can* run games (but may not be “gaming-first”).
 ✅ No more made-up screen specs/links: the model is forced to use ONLY catalog fields; if spec isn’t in CSV it must say “غير مذكور في الكتالوج”.
