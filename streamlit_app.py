@@ -562,7 +562,7 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.caption("Made with 🤍 by SMART")
+    st.caption("Made smartly by SMART")
 
 # ----------------------------
 # Display chat messages
