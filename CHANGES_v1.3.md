@@ -1,4 +1,4 @@
-# Smorti – Version 1.3
+# Smorti – Version 0.31
 
 ## Changes
 
@@ -28,9 +28,16 @@
 
 * Full Islamic greeting with 🤍 when full greeting is used (SMART personality)
 
-* Creative writing (poems/stories) supported without inventing facts (SMART personality)
+* Creative writing (poems/stories) supported without inventing facts (SMART personality) 
+
+
+## New functions
+
+* Ability to submit feedback
+
+* change log for more information about what is being done and changed
 
 ---
 
-**Version:** 1.3
+**Version:** 0.31
 **Status:** Internal Testing ✅

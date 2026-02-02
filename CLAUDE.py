@@ -1,7 +1,7 @@
 """
-Smorti AI Agent (CLAUDE.py) - v1.3
+Smorti AI Agent (CLAUDE.py) - v0.31 FIXED (STREAMLIT-SAFE)
+ANTI-HALLUCINATION + STABLE PERSONA + CSV-ONLY PRODUCTS
 Backend engine used by Streamlit app + local CLI.
-Updated with improved personality, language handling, and product recommendations.
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ import os
 from dotenv import load_dotenv
 import re
 
-APP_VERSION = "v1.3"
-
-# Load environment variables from .env file (local). Streamlit Cloud uses st.secrets -> env.
+APP_VERSION = "v0.31"
 load_dotenv()
 
 # ============================================
@@ -26,7 +24,6 @@ load_dotenv()
 # ============================================
 
 def setup_logging():
-    """Configure logging for local testing + Streamlit Cloud."""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - [%(levelname)s] - %(message)s',
@@ -55,7 +52,10 @@ OFFICIAL_LINKS = {
     "whatsapp": "https://wa.me/966593440030",
 }
 
-# Installments - EXACT information
+# =========================
+# FACTS (UNCHANGED)
+# =========================
+
 INSTALLMENT_FACTS_AR = (
     "💳 **التقسيط المتوفر:**\n"
     "نوفر لك التقسيط عبر **Tabby** و **Tamara** و **MisPay**\n\n"
@@ -116,45 +116,89 @@ LIFESPAN_FACTS_EN = (
     "• Device care and ambient temperature 🌡️"
 )
 
-# Greetings variations for variety
-ARABIC_GREETINGS = [
-    "يا هلا ومرحبا",
-    "أهلين وسهلين",
-    "حياك الله",
-    "نورت",
-    "منورنا",
-    "يا مرحبا",
-]
+WARRANTY_FACTS_AR = (
+    "🛡️ **سياسة الضمان:**\n\n"
+    "**ضمان المنتجات الجديدة:**\n"
+    "• ضمان لمدة **سنتين** على جميع المنتجات التقنية\n"
+    "• يشمل **العيوب المصنعية**\n"
+    "• لا يشمل الأعطال بسبب **سوء الاستخدام** أو **الحوادث** أو **الصيانة غير المعتمدة**\n\n"
+    "**ضمان المنتجات المستعملة:**\n"
+    "• ضمان لمدة **30 يوم** على جميع المنتجات التقنية المستعملة\n"
+    "• يشمل **العيوب المصنعية**\n"
+    "• لا يشمل سوء الاستخدام/الحوادث/الصيانة غير المعتمدة أو الملاحظات المذكورة مسبقاً في الوصف ✅"
+)
 
-ENGLISH_GREETINGS = [
-    "Hey there",
-    "Hello",
-    "Hi",
-    "Welcome",
-    "Howdy",
-    "Greetings",
-]
+WARRANTY_FACTS_EN = (
+    "🛡️ **Warranty Policy:**\n\n"
+    "**New products:**\n"
+    "• **2-year** warranty on all tech products\n"
+    "• Covers **manufacturing defects**\n"
+    "• Does NOT cover misuse, accidents, or unauthorized maintenance\n\n"
+    "**Used products:**\n"
+    "• **30-day** warranty on all used tech products\n"
+    "• Covers **manufacturing defects**\n"
+    "• Does NOT cover misuse/accidents/unauthorized maintenance or pre-mentioned notes in the description ✅"
+)
+
+SHIPPING_FACTS_AR = (
+    "🚚 **التوصيل والشحن:**\n\n"
+    "**داخل السعودية (المدن المحلية):**\n"
+    "• **سمسا (SMSA)**\n"
+    "• **رد بوكس (RedBox)**\n"
+    "• **أراميكس (Aramex)**\n\n"
+    "**خارج السعودية:**\n"
+    "• **DHL فقط** 🌍\n\n"
+    "📦 تكلفة ووقت التوصيل تظهر لك عند إتمام الطلب في صفحة الدفع."
+)
+
+SHIPPING_FACTS_EN = (
+    "🚚 **Delivery & Shipping:**\n\n"
+    "**Within Saudi Arabia (local cities):**\n"
+    "• **SMSA**\n"
+    "• **RedBox**\n"
+    "• **Aramex**\n\n"
+    "**Outside Saudi Arabia:**\n"
+    "• **DHL only** 🌍\n\n"
+    "📦 Delivery cost & ETA appear at checkout."
+)
+
+# =========================
+# TONE HELPERS (no fake facts)
+# =========================
+
+def wrap_facts_ar(title: str, facts: str) -> str:
+    return f"أكيد 🤍\n{title}\n\n{facts}"
+
+def wrap_facts_en(title: str, facts: str) -> str:
+    return f"Sure 🤍\n{title}\n\n{facts}"
+
+# ============================================
+# 2.1) TEXT NORMALIZATION
+# ============================================
+
+_AR_DIACRITICS = re.compile(r"[\u064B-\u065F\u0610-\u061A\u06D6-\u06ED]")
+_AR_TATWEEL = "\u0640"
+
+def normalize_arabic(text: str) -> str:
+    s = (text or "").strip().lower()
+    s = s.replace(_AR_TATWEEL, "")
+    s = _AR_DIACRITICS.sub("", s)
+    s = s.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+    s = s.replace("ى", "ي")
+    s = re.sub(r"[^\w\u0600-\u06FF\s]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 def is_arabic(text: str) -> bool:
     return bool(ARABIC_RE.search(text or ""))
 
 def detect_language_simple(text: str) -> str:
-    """Simple language detection based on character count"""
     arabic_chars = len(re.findall(r'[\u0600-\u06FF]', text or ""))
     english_chars = len(re.findall(r'[a-zA-Z]', text or ""))
     return 'ar' if arabic_chars > english_chars else 'en'
 
-def stable_language(
-    current_text: str,
-    conversation_history: Optional[List[Dict]] = None
-) -> str:
-    """
-    Enhanced language stability with explicit switching support.
-    Only switches if user explicitly requests or if clearly using different language.
-    """
+def stable_language(current_text: str, conversation_history: Optional[List[Dict]] = None) -> str:
     t = (current_text or "").lower()
-
-    # Check for explicit language switch requests
     english_requests = [
         "بالانجليزي", "بالإنجليزي", "in english", "speak english",
         "english please", "switch to english", "talk in english"
@@ -163,101 +207,238 @@ def stable_language(
         "بالعربي", "بالعربية", "in arabic", "speak arabic",
         "arabic please", "switch to arabic", "تكلم عربي"
     ]
-
     if any(req in t for req in english_requests):
         return "en"
     if any(req in t for req in arabic_requests):
         return "ar"
 
-    # Detect current message language
     cur_lang = detect_language_simple(current_text)
-
-    # Get last user message language from history
     last_user_lang = None
     if conversation_history:
         for msg in reversed(conversation_history):
             if msg.get("role") == "user":
                 last_user_lang = detect_language_simple(msg.get("content", ""))
                 break
+    return last_user_lang or cur_lang
 
-    # If no history, use current detection
-    if not last_user_lang:
-        return cur_lang
+# ============================================
+# 2.2) JOKES (no hallucination)
+# ============================================
 
-    # Only switch if there's strong evidence (not just one word)
-    if last_user_lang != cur_lang:
-        # Check if it's a strong switch (multiple words or long text in new language)
-        if cur_lang == "ar":
-            ar_content = len(re.findall(r'[\u0600-\u06FF]+', current_text or ""))
-            if ar_content >= 3 or len(current_text) >= 15:  # Strong Arabic signal
-                return "ar"
-        elif cur_lang == "en":
-            en_words = len(re.findall(r'\b[a-zA-Z]+\b', current_text or ""))
-            if en_words >= 3 or len(current_text) >= 15:  # Strong English signal
-                return "en"
+ARABIC_TECH_JOKES = [
+    "ليش الـWi-Fi زعلان؟\nلأن الكل *يتصل فيه*… وما أحد *يسأل عنه* 🤍📶😂",
+    "قالوا للمبرمج: اكتب كود نظيف…\nراح غسل اللابتوب 🧼💻😂",
+    "المبرمج إذا قال: 'بس أصلح شي بسيط'…\nاعرف إن اليوم راح يطول 😭⌨️",
+    "قلت للكمبيوتر: لا تشيل هم…\nقال: طيب بس لا تفتح 50 تبويب كروم مرة وحدة 😅🧠",
+    "ليش السيرفر متوتر؟\nلأنه عليه ضغط… حرفياً (Load) 😅🖥️",
+    "أكثر جملة تخوف في التقنية؟\n'It works on my machine' 😭🧩😂",
+    "سألته: ليه تحب البرمجة؟\nقال: لأنها العلاقة الوحيدة اللي إذا خربت… تقدر تصلحها بـ (Ctrl+Z) 😄⌨️",
+]
 
-        # Weak signal, keep previous language
-        return last_user_lang
+ENGLISH_TECH_JOKES = [
+    "Why do programmers prefer dark mode?\nBecause light attracts bugs 🐛😄",
+    "Debugging: where you remove one bug and add two new features 🐛✨",
+    "‘It works on my machine’ — the most powerful spell in software engineering 😅🧩",
+    "I told my computer I needed a break…\nIt said: 'No problem — I’ll go to sleep.' 😴💻",
+    "Why did the developer go broke?\nBecause he used up all his cache 💸😂",
+]
 
-    return cur_lang
+def is_joke_request(text: str) -> bool:
+    t_raw = (text or "").lower().strip()
+    t_ar = normalize_arabic(text)
 
-# Enhanced greeting detection with variations
-SALAM_RE = re.compile(
-    r"(السلام عليكم(?:\s*و\s*رحمة الله(?:\s*و\s*بركاته)?)?)",
-    re.IGNORECASE
-)
+    keys_ar = ["نكتة", "نكته", "ضحكني", "اضحكني", "طرفة", "ابغا نكتة", "ابغى نكتة", "قول نكتة", "قول نكته"]
+    if any(k in t_ar for k in keys_ar):
+        return True
+
+    # catches: joke / jok / tell me a jok / funny / make me laugh
+    if re.search(r"\bjok(e)?\b", t_raw) or "tell me a jok" in t_raw or "make me laugh" in t_raw or "funny" in t_raw:
+        return True
+
+    return False
+
+def is_another_joke_request(text: str) -> bool:
+    t_ar = normalize_arabic(text)
+    t_raw = (text or "").lower()
+    keys_ar = ["وحدة ثانية", "واحدة ثانية", "نكتة ثانية", "نكته ثانيه", "ثانية", "كمان", "زيادة"]
+    keys_en = ["another", "another one", "one more", "more", "next"]
+    return any(k in t_ar for k in keys_ar) or any(k in t_raw for k in keys_en)
+
+def tell_joke(language: str) -> str:
+    import random
+    if language == "ar":
+        return f"أكيد 😄🤍\n\n{random.choice(ARABIC_TECH_JOKES)}"
+    return f"Sure 😄🤍\n\n{random.choice(ENGLISH_TECH_JOKES)}"
+
+# ============================================
+# 2.3) GREETINGS (introduce once)
+# ============================================
+
 EN_GREETING_RE = re.compile(
     r"\b(hi|hello|hey|good\s*(morning|evening|afternoon)|howdy|greetings)\b",
     re.IGNORECASE
 )
-AR_GREETING_RE = re.compile(
-    r"\b(هلا|هلا والله|مرحبا|يا هلا|السلام|اهلين|حياك|منور)\b",
-    re.IGNORECASE
-)
 
-def is_probably_just_greeting(text: str) -> bool:
-    """Check if message is primarily a greeting"""
-    t = (text or "").strip()
-    if not t:
+def is_arabic_greeting_only(text: str) -> bool:
+    s = normalize_arabic(text)
+    if not s:
         return True
-    # Allow up to 40 characters for greetings
-    if len(t) <= 40 and (SALAM_RE.search(t) or EN_GREETING_RE.search(t) or AR_GREETING_RE.search(t)):
+    tokens = s.split()
+    if len(tokens) > 4:
+        return False
+
+    joined = " ".join(tokens)
+    greeting_phrases = {
+        "سلام", "سلام عليكم", "السلام عليكم", "عليكم السلام", "وعليكم السلام",
+        "مرحبا", "هلا", "هلا والله", "اهلين", "اهلا", "يا هلا", "حياك", "منور", "منورنا",
+    }
+    if joined in greeting_phrases:
+        return True
+    if "السلام عليكم" in joined or "سلام عليكم" in joined:
+        return True
+    if joined.startswith("وعليكم السلام") or joined.startswith("عليكم السلام"):
+        return True
+    if re.search(r"\bسلام\w*\s+عليكم\w*\b", joined):
         return True
     return False
 
-def greeting_reply(text: str, lang: str) -> str:
-    """Generate varied greeting responses with personality"""
-    import random
-
+def is_probably_just_greeting(text: str) -> bool:
     t = (text or "").strip()
+    if not t:
+        return True
+    if is_arabic(t) and is_arabic_greeting_only(t) and len(t) <= 80:
+        return True
+    if len(t) <= 80 and EN_GREETING_RE.search(t):
+        return True
+    return False
 
-    # Special handling for full Islamic greeting
-    if SALAM_RE.search(t):
+def _already_introduced_from_history(conversation_history: Optional[List[Dict]]) -> bool:
+    if not conversation_history:
+        return False
+    for msg in conversation_history:
+        if msg.get("role") == "assistant":
+            return True
+    return False
+
+def intro_message(lang: str) -> str:
+    if lang == "ar":
         return (
-            "وعليكم السلام ورحمة الله وبركاته 🤍🤍\n\n"
-            f"{random.choice(ARABIC_GREETINGS)}! أنا **سمورتي** 😊\n"
-            "مساعدك الذكي (اللي لسه تحت التطوير 🔧) في متجر SMART\n\n"
-            "ما تخاف، أنا هنا عشان أخدمك وأضحكك شوي 😄\n"
-            "إيش تبي تشوف اليوم؟ 🛍️"
+            "هلا 👋🤍\n"
+            "أنا **سمورتي** — مساعد ذكي لمتجر سمارت 🛒\n"
+            "تنبيه صغير: أنا **لسّه تحت التطوير** 😅 بس بوعدك أحاول أخدمك قد ما أقدر وبأوضح لك الموجود المتاح.\n\n"
+            "قلّي وش تحتاج (جهاز قراءة / شاشة / برامج / سعر / مقارنة) وأنا أساعدك 😊"
         )
-
-    if lang == "en":
-        return (
-            f"{random.choice(ENGLISH_GREETINGS)}! 😊\n\n"
-            "I'm **Smorti** - your friendly AI assistant at SMART store\n"
-            "(Still under development, so bear with me! 🔧)\n\n"
-            "I'm here to help you find what you need... and maybe crack a joke or two 😄\n"
-            "What are you looking for today? 🛍️"
-        )
-
-    # Arabic casual greeting
     return (
-        f"{random.choice(ARABIC_GREETINGS)}! 😊\n\n"
-        "أنا **سمورتي** - مساعدك الذكي في متجر SMART\n"
-        "(لسه تحت التطوير، فعطني فرصة! 🔧)\n\n"
-        "جيت المكان الصح - بساعدك وبضحكك بنفس الوقت 😄\n"
-        "إيش نختار لك اليوم؟ 🛍️"
+        "Hey! 👋🤍\n"
+        "I’m **Smorti** — your AI assistant for SMART store 🛒\n"
+        "Quick note: I’m **still under development** 😅 but I’ll do my best to help with what’s available.\n\n"
+        "Tell me what you need (reading device / screen / software / price / comparison) and I’ll help 😊"
     )
+
+
+def greeting_reply(lang: str, first_time: bool, original_text: str) -> str:
+    if first_time:
+        if lang == "ar":
+            if is_arabic_greeting_only(original_text):
+                return "وعليكم السلام ورحمة الله وبركاته 🤍\n\n" + intro_message("ar")
+            return intro_message("ar")
+        return intro_message("en")
+
+    if lang == "ar" and is_arabic_greeting_only(original_text):
+        return "وعليكم السلام ورحمة الله وبركاته 🤍\n\nنورت! كيف أقدر أساعدك؟ 😊"
+
+    if lang == "ar":
+        return "يا هلا 🤍 كيف أقدر أساعدك؟ 😊"
+    return "Hey 🤍 How can I help you? 😊"
+
+# ============================================
+# 2.4) SESSION STATE HELPERS
+# ============================================
+
+def _get_session(session_state: Optional[Dict[str, Any]], session_id: Optional[str]) -> Dict[str, Any]:
+    if session_state is None or not session_id:
+        return {}
+    sess = session_state.get(session_id)
+    if not isinstance(sess, dict):
+        sess = {}
+        session_state[session_id] = sess
+    return sess
+
+def _set_session(session_state: Optional[Dict[str, Any]], session_id: Optional[str], key: str, value: Any) -> None:
+    if session_state is None or not session_id:
+        return
+    sess = _get_session(session_state, session_id)
+    sess[key] = value
+
+# ============================================
+# 2.5) URL SAFETY (no homepage fallback)
+# ============================================
+
+def allowed_urls_from_products(products: List[Dict[str, Any]]) -> set:
+    allowed = set(OFFICIAL_LINKS.values())
+    for p in products or []:
+        u1 = str(p.get("product_url", "")).strip()
+        u2 = str(p.get("category_link", "")).strip()
+        if u1.startswith("http"):
+            allowed.add(u1)
+        if u2.startswith("http"):
+            allowed.add(u2)
+    return allowed
+
+def scrub_unknown_urls(text: str, allowed: set, fallback_url: str, allow_store: bool = False) -> str:
+    def repl(m):
+        url = m.group(0).rstrip(").,،。!؟!?]")
+        # If model outputs homepage and we don't allow it -> use fallback category
+        if url == OFFICIAL_LINKS["store"] and (not allow_store):
+            return fallback_url or OFFICIAL_LINKS["tablets"]
+        return url if url in allowed else (fallback_url or OFFICIAL_LINKS["tablets"])
+    return URL_RE.sub(repl, text or "")
+
+PLACEHOLDER_CONTACT_RE = re.compile(
+    r"\[(رقم الهاتف|عنوان البريد الإلكتروني|عنوان الموقع الإلكتروني|اسم حسابنا.*?|phone.*?|email.*?|website.*?)\]",
+    re.IGNORECASE
+)
+
+def scrub_placeholders(text: str) -> str:
+    return PLACEHOLDER_CONTACT_RE.sub("", text or "")
+
+# ============================================
+# 2.6) ACCESSORY FILTER (prevents pen tips)
+# ============================================
+
+def _product_blob(p: Dict[str, Any]) -> str:
+    return " ".join([
+        str(p.get('item_type', '')).lower(),
+        str(p.get('category', '')).lower(),
+        str(p.get('name_en', '')).lower(),
+        str(p.get('name_ar', '')).lower(),
+        str(p.get('short_desc', '')).lower(),
+        str(p.get('keywords', '')).lower(),
+    ])
+
+ACCESSORY_TERMS = [
+    "tip", "tips", "nib", "nibs", "replacement", "refill",
+    "سنون", "رؤوس", "بديل", "تبديل", "قطع غيار",
+    "cover", "case", "جراب", "حافظة", "كفر",
+    "lamp", "light", "اضاءة", "إضاءة", "لمبة", "مصباح",
+    "holder", "stand", "حامل",
+]
+
+def _exclude_accessories(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for p in products:
+        blob = _product_blob(p)
+        if any(t in blob for t in ACCESSORY_TERMS):
+            continue
+        out.append(p)
+    return out
+
+def _safe_float(x) -> float:
+    try:
+        m = re.search(r"(\d+(\.\d+)?)", str(x or ""))
+        return float(m.group(1)) if m else -1.0
+    except Exception:
+        return -1.0
 
 # ============================================
 # 3) EXCEPTIONS
@@ -275,32 +456,32 @@ class GroqAPIError(SmortiBaseException):
         self.original_error = original_error
         super().__init__(
             message,
-            "عذراً، صار خطأ مؤقت بالنظام 🙏 جرب مرة ثانية بعد شوي",
-            "Sorry, a temporary system error occurred 🙏 Please try again in a moment"
+            "صار عندي تعليق بسيط 😅🤍\nخلّنا نجرب مرة ثانية.",
+            "A tiny hiccup happened 😅🤍\nLet’s try again."
         )
 
 class GroqRateLimitError(SmortiBaseException):
     def __init__(self, message: str):
         super().__init__(
             message,
-            "عذراً، الطلبات كثيرة حالياً 😅 انتظر ثواني وجرب مرة ثانية",
-            "Sorry, too many requests right now 😅 Wait a few seconds and try again"
+            "الطلبات كثيرة شوي حالياً 😅🤍\nانتظر ثواني وجرب مرة ثانية.",
+            "Too many requests right now 😅🤍\nWait a few seconds and try again."
         )
 
 class CatalogLoadError(SmortiBaseException):
     def __init__(self, message: str):
         super().__init__(
             message,
-            "ما قدرت أوصل للكتالوج حالياً 😔 خلني أوجهك للموقع مباشرة",
-            "Cannot access the catalog right now 😔 Let me direct you to the website"
+            "ما قدرت أوصل للكتالوج حالياً 😔🤍",
+            "I can't reach the catalog right now 😔🤍"
         )
 
 class EmptyInputError(SmortiBaseException):
     def __init__(self):
         super().__init__(
             "Empty user input",
-            "مرحباً! 😊 كيف أقدر أخدمك؟",
-            "Hello! 😊 How can I help you?"
+            "هلا 🤍 اكتب لي سؤالك وبساعدك 😊",
+            "Hey 🤍 Send me your question and I’ll help 😊"
         )
 
 # ============================================
@@ -318,14 +499,12 @@ def retry_groq_call(max_attempts=3, delay=2, backoff=2):
             while attempt <= max_attempts:
                 try:
                     return func(*args, **kwargs)
-
                 except GroqRateLimitError:
                     logger.warning(f"Rate limit hit on attempt {attempt}")
                     if attempt == max_attempts:
                         raise
                     time.sleep(current_delay * 3)
                     attempt += 1
-
                 except GroqAPIError as e:
                     last_error = e
                     if attempt == max_attempts:
@@ -333,14 +512,12 @@ def retry_groq_call(max_attempts=3, delay=2, backoff=2):
                     time.sleep(current_delay)
                     current_delay *= backoff
                     attempt += 1
-
                 except Exception as e:
                     logger.error(f"Unexpected error in {func.__name__}: {str(e)}")
                     raise
 
             if last_error:
                 raise last_error
-
         return wrapper
     return decorator
 
@@ -353,7 +530,7 @@ def call_groq_api(
     prompt: str,
     system_prompt: str,
     conversation_history: Optional[List[Dict]] = None,
-    temperature: float = 0.35,
+    temperature: float = 0.10,
     max_tokens: int = 900
 ) -> str:
     try:
@@ -372,14 +549,25 @@ def call_groq_api(
 
         model_name = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-        response = client.chat.completions.create(
+        create_kwargs = dict(
             model=model_name,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            top_p=1,
+            top_p=0.85,
             stream=False
         )
+
+        try:
+            create_kwargs.update({
+                "frequency_penalty": 0.5,
+                "presence_penalty": 0.5,
+            })
+            response = client.chat.completions.create(**create_kwargs)
+        except TypeError:
+            create_kwargs.pop("frequency_penalty", None)
+            create_kwargs.pop("presence_penalty", None)
+            response = client.chat.completions.create(**create_kwargs)
 
         ai_response = response.choices[0].message.content
         if not ai_response or not ai_response.strip():
@@ -426,7 +614,6 @@ class ProductCatalog:
         if self.df is None or self.df.empty:
             raise CatalogLoadError("Catalog file is empty")
 
-        # Fill nulls defensively
         fill_values = {
             'price_sar': 0,
             'old_price_sar': 0,
@@ -464,7 +651,6 @@ class ProductCatalog:
         return self.products
 
     def _score_product(self, product: Dict[str, Any], terms: List[str]) -> int:
-        """Enhanced scoring with better weighting"""
         score = 0
         fields = [
             str(product.get('name_en', '')).lower(),
@@ -481,7 +667,6 @@ class ProductCatalog:
         for t in terms:
             if not t:
                 continue
-            # Higher scores for exact matches in key fields
             if t in str(product.get('name_en', '')).lower():
                 score += 5
             if t in str(product.get('name_ar', '')).lower():
@@ -498,7 +683,6 @@ class ProductCatalog:
         return score
 
     def search_products(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search products with improved relevance"""
         if self.products is None:
             self.load()
 
@@ -515,144 +699,33 @@ class ProductCatalog:
         return [p for _, p in scored[:limit]]
 
     def filter_by_type(self, products: List[Dict[str, Any]], include_any: List[str]) -> List[Dict[str, Any]]:
-        """Filter products by type/category keywords"""
         keys = [k.lower() for k in include_any]
         out = []
         for p in products:
-            blob = " ".join([
-                str(p.get('item_type', '')).lower(),
-                str(p.get('category', '')).lower(),
-                str(p.get('name_en', '')).lower(),
-                str(p.get('name_ar', '')).lower(),
-                str(p.get('short_desc', '')).lower(),
-                str(p.get('keywords', '')).lower(),
-            ])
+            blob = _product_blob(p)
             if any(k in blob for k in keys):
                 out.append(p)
         return out
 
 # ============================================
-# 7) SAFETY: PRODUCT CONTEXT + URL SCRUBBING
-# ============================================
-
-def build_product_context(products: List[Dict[str, Any]], language: str) -> str:
-    """Build context with product data, ensuring AI doesn't invent information"""
-    if not products:
-        if language == "ar":
-            return (
-                "\n\n=== لا توجد منتجات مطابقة ===\n"
-                "لم يتم العثور على منتجات مطابقة في الكتالوج.\n"
-                f"⚠️ **قاعدة صارمة:** لا تخترع أي منتجات أو روابط!\n"
-                f"🔗 وجّه المستخدم إلى: {OFFICIAL_LINKS['store']}\n"
-                "أو اقترح التواصل عبر WhatsApp للمساعدة.\n"
-            )
-        return (
-            "\n\n=== NO MATCHING PRODUCTS ===\n"
-            "No matching products found in catalog.\n"
-            f"⚠️ **STRICT RULE:** Do NOT invent any products or links!\n"
-            f"🔗 Direct user to: {OFFICIAL_LINKS['store']}\n"
-            "Or suggest contacting via WhatsApp for assistance.\n"
-        )
-
-    def g(p: Dict[str, Any], k: str, default="N/A"):
-        v = p.get(k, default)
-        return default if v is None or v == "" else v
-
-    ctx = "\n\n=== المنتجات المتوفرة (استخدم هذه البيانات فقط) ===\n" if language == "ar" else "\n\n=== AVAILABLE PRODUCTS (USE ONLY THIS DATA) ===\n"
-
-    for i, p in enumerate(products, 1):
-        ctx += f"\n--- المنتج {i} ---\n" if language == "ar" else f"\n--- Product {i} ---\n"
-        ctx += f"name_en: {g(p,'name_en')}\n"
-        ctx += f"name_ar: {g(p,'name_ar')}\n"
-        ctx += f"brand: {g(p,'brand')}\n"
-        ctx += f"series: {g(p,'series')}\n"
-        ctx += f"category: {g(p,'category')}\n"
-        ctx += f"item_type: {g(p,'item_type')}\n"
-        ctx += f"short_desc: {g(p,'short_desc')}\n"
-        ctx += f"price_sar: {g(p,'price_sar')}\n"
-        ctx += f"old_price_sar: {g(p,'old_price_sar')}\n"
-        ctx += f"screen_size_in: {g(p,'screen_size_in')}\n"
-        ctx += f"display_type: {g(p,'display_type')}\n"
-        ctx += f"ram_gb: {g(p,'ram_gb')}\n"
-        ctx += f"storage_gb: {g(p,'storage_gb')}\n"
-        ctx += f"resolution_px: {g(p,'resolution_px')}\n"
-        ctx += f"ppi: {g(p,'ppi')}\n"
-        ctx += f"cpu: {g(p,'cpu')}\n"
-        ctx += f"os: {g(p,'os')}\n"
-        ctx += f"wifi: {g(p,'wifi')}\n"
-        ctx += f"bluetooth: {g(p,'bluetooth')}\n"
-        ctx += f"Battery_mah: {g(p,'Battery_mah')}\n"
-        ctx += f"connectivity: {g(p,'connectivity')}\n"
-        ctx += f"product_url: {g(p,'product_url')}\n"
-        ctx += f"category_link: {g(p,'category_link')}\n"
-        ctx += f"availability: {g(p,'availability')}\n"
-
-    if language == "ar":
-        ctx += "\n=== قواعد صارمة ===\n"
-        ctx += "- استخدم **فقط** المنتجات أعلاه\n"
-        ctx += "- **لا تخترع أبداً** أي أسماء منتجات أو أسعار أو مواصفات أو روابط\n"
-        ctx += "- إذا لم تكن المواصفة موجودة أعلاه، قل: (غير مذكور في الكتالوج)\n"
-        ctx += "- استخدم فقط الروابط الموجودة في product_url/category_link أو الروابط الرسمية\n"
-        ctx += "- **لا تضع أبداً** placeholders مثل [رقم الهاتف] أو [email]\n"
-    else:
-        ctx += "\n=== STRICT RULES ===\n"
-        ctx += "- Use **ONLY** the products listed above\n"
-        ctx += "- **NEVER invent** any product names, prices, specs, or URLs\n"
-        ctx += "- If a spec is not shown above, say: (Not listed in our catalog)\n"
-        ctx += "- Only use URLs from product_url/category_link above or official links\n"
-        ctx += "- **NEVER use** placeholders like [phone number] or [email]\n"
-
-    ctx += "==================\n"
-    return ctx
-
-def allowed_urls_from_products(products: List[Dict[str, Any]]) -> set:
-    """Extract allowed URLs from products"""
-    allowed = set(OFFICIAL_LINKS.values())
-    for p in products or []:
-        u1 = str(p.get("product_url", "")).strip()
-        u2 = str(p.get("category_link", "")).strip()
-        if u1.startswith("http"):
-            allowed.add(u1)
-        if u2.startswith("http"):
-            allowed.add(u2)
-    return allowed
-
-def scrub_unknown_urls(text: str, allowed: set) -> str:
-    """Replace unknown URLs with store link"""
-    def repl(m):
-        url = m.group(0).rstrip(").,،。!؟!?]")
-        return url if url in allowed else OFFICIAL_LINKS["store"]
-    return URL_RE.sub(repl, text or "")
-
-# Scrub placeholder contact fields
-PLACEHOLDER_CONTACT_RE = re.compile(
-    r"\[(رقم الهاتف|عنوان البريد الإلكتروني|عنوان الموقع الإلكتروني|اسم حسابنا.*?|phone.*?|email.*?|website.*?)\]",
-    re.IGNORECASE
-)
-
-def scrub_placeholders(text: str) -> str:
-    """Remove placeholder contact information"""
-    return PLACEHOLDER_CONTACT_RE.sub("", text or "")
-
-# ============================================
-# 8) INTENT DETECTION
+# 7) INTENT DETECTION
 # ============================================
 
 def has_any(text: str, keys: List[str]) -> bool:
-    """Check if text contains any of the keywords"""
     t = (text or "").lower()
     return any(k.lower() in t for k in keys)
 
 def is_installment_query(text: str) -> bool:
-    """Detect installment-related queries"""
-    return has_any(text, [
-        "تقسيط", "تمارا", "تابي", "تابى", "mispay", "ميس باي",
-        "installment", "tabby", "tamara", "أقساط", "قسط",
-        "دفعات", "payments", "split"
-    ])
+    t = (text or "").lower()
+    questions = [
+        "كيف التقسيط", "وش التقسيط", "عندكم تقسيط",
+        "تقسيط كيف", "عندكم تابي", "عندكم تمارا",
+        "how is installment", "do you have installment",
+        "you have tabby", "you have tamara"
+    ]
+    return any(q in t for q in questions)
 
 def is_battery_query(text: str) -> bool:
-    """Detect battery-related queries"""
     return has_any(text, [
         "بطارية", "battery", "تشحن", "شحن", "يدوم",
         "lasts", "مدة البطارية", "battery life", "charge",
@@ -660,15 +733,19 @@ def is_battery_query(text: str) -> bool:
     ])
 
 def is_lifespan_query(text: str) -> bool:
-    """Detect device lifespan queries"""
     return has_any(text, [
         "عمر", "يعيش", "كم سنة", "virtual age", "lifespan",
         "how long will it last", "يدوم كم", "كم يدوم",
         "durability", "متين", "يطول"
     ])
 
+def is_warranty_query(text: str) -> bool:
+    return has_any(text, ["ضمان", "warranty", "كفالة", "ضمانكم", "مدة الضمان", "كم الضمان"])
+
+def is_shipping_query(text: str) -> bool:
+    return has_any(text, ["توصيل", "شحن", "delivery", "shipping", "يوصل", "تشحنون", "تشحن", "ارسلوا", "ارسال"])
+
 def is_programs_query(text: str) -> bool:
-    """Detect software/license queries"""
     return has_any(text, [
         "ترخيص", "رخصة", "license", "software", "برنامج", "برامج",
         "spss", "matlab", "solidworks", "arcgis", "autocad",
@@ -676,15 +753,13 @@ def is_programs_query(text: str) -> bool:
     ])
 
 def is_monitor_or_screen_query(text: str) -> bool:
-    """Detect monitor/screen queries (NOT e-readers)"""
     return has_any(text, [
-        "monitor", "monitors", "شاشة", "شاشه", "screen للألعاب",
-        "display للألعاب", "gaming monitor", "gaming screen",
-        "تفاعلية", "interactive", "sparq", "سبارك", "شاشة كمبيوتر"
+        "monitor", "monitors", "شاشة", "شاشه", "screen", "display",
+        "gaming monitor", "gaming screen", "شاشة العاب", "شاشة للألعاب",
+        "تفاعلية", "interactive", "sparq", "سبارك", "thinkvision", "lenovo"
     ])
 
 def is_gaming_query(text: str) -> bool:
-    """Detect gaming-related queries"""
     return has_any(text, [
         "gaming", "قيمينق", "قيمينج", "ألعاب", "العاب",
         "fps", "هرتز", "hz", "refresh rate", "ps5", "xbox",
@@ -692,57 +767,110 @@ def is_gaming_query(text: str) -> bool:
     ])
 
 def is_boox_query(text: str) -> bool:
-    """Detect BOOX/e-reader queries"""
     return has_any(text, [
         "boox", "بوكس", "قارئ", "ebook", "e-book", "eink", "e-ink",
         "note air", "palma", "go 6", "go 7", "go color", "tab x",
         "tab ultra", "قراءة", "reading", "كتاب إلكتروني"
     ])
 
-def is_poetry_or_story_request(text: str) -> bool:
-    """Detect creative writing requests"""
+def is_reading_device_intent(text: str) -> bool:
     return has_any(text, [
-        "قصيدة", "شعر", "قافية", "بيت شعر", "قصة", "سرد",
-        "poem", "poetry", "story", "اكتب", "write"
+        "جهاز قراءة", "للقراءة", "قراءة الكتب", "قراءة كتاب", "كتب",
+        "قارئ إلكتروني", "قارئ الكتروني", "ebook reader", "e-reader",
+        "read books", "reading device", "device for reading"
     ])
+
+def wants_big_screen(text: str) -> bool:
+    t = normalize_arabic(text)
+    return ("شاشه كبيره" in t) or ("شاشة كبيرة" in (text or "")) or has_any(text, ["large screen", "big screen", "اكبر شاشة", "أكبر شاشة"])
+
+def is_notes_intent(text: str) -> bool:
+    t_raw = (text or "").lower()
+    t_ar = normalize_arabic(text)
+    keys_ar = ["ملاحظات", "تدوين", "كتابة", "كتابه", "اكتب", "رسم", "نوت", "نوتس"]
+    keys_en = ["notes", "note taking", "notetaking", "write", "writing", "draw", "sketch"]
+    return any(k in t_ar for k in keys_ar) or any(k in t_raw for k in keys_en)
+
+def detect_explicit_language_switch(text: str) -> Optional[str]:
+    t = (text or "").lower().strip()
+    if any(req in t for req in ["تكلم عربي", "بالعربي", "تكلم معاي بالعربي", "كلمني عربي"]):
+        return "ar"
+    if any(req in t for req in ["speak english", "in english", "بالانجليزي", "بالإنجليزي"]):
+        return "en"
+    return None
 
 def is_contact_query(text: str) -> bool:
-    """Detect contact information queries"""
-    return has_any(text, [
-        "تواصل", "اتواصل", "رقم", "واتساب", "whatsapp",
-        "contact", "reach", "support", "اتصال", "تواصلوا"
-    ])
+    return has_any(text, ["تواصل", "اتواصل", "رقم", "واتساب", "whatsapp", "contact", "reach", "support", "اتصال", "تواصلوا"])
+
+# Important: accessory query should NOT catch general "pen/قلم" (prevents pen tips confusion)
+def is_accessory_query(text: str) -> bool:
+    t_raw = (text or "").lower()
+    t_ar = normalize_arabic(text)
+
+    # If user asks for notes, do NOT treat as accessories
+    if is_notes_intent(text):
+        return False
+
+    # strong-only for tips/nibs etc.
+    strong_ar = ["سنون", "رؤوس", "بديل", "قطع غيار"]
+    strong_en = ["tips", "tip", "nibs", "nib", "replacement", "refill"]
+
+    other_accessories = [
+        "case", "cover", "جراب", "حافظة", "كفر",
+        "lamp", "light", "اضاءة", "إضاءة", "لمبة", "مصباح",
+        "holder", "stand", "حامل"
+    ]
+
+    if any(k in t_ar for k in strong_ar) or any(k in t_raw for k in strong_en):
+        return True
+
+    return any(acc in t_raw for acc in other_accessories) or any(acc in t_ar for acc in other_accessories)
 
 # ============================================
-# 9) FALLBACK RESPONSES
+# 8) FALLBACKS (accurate, non-random)
 # ============================================
 
-def get_fallback_response(error: SmortiBaseException, language: str = 'ar') -> str:
-    """Get appropriate fallback message based on language"""
-    return error.user_message_ar if language == 'ar' else error.user_message_en
+def fallback_product_links(language: str, topic: str) -> str:
+    if topic == "reading":
+        return OFFICIAL_LINKS["tablets"]
+    if topic == "display":
+        return OFFICIAL_LINKS["interactive"]
+    if topic == "software":
+        return OFFICIAL_LINKS["software"]
+    return OFFICIAL_LINKS["store"]
+
+def safe_fallback_message(language: str, topic: str) -> str:
+    link = fallback_product_links(language, topic)
+    if language == "ar":
+        if topic == "reading":
+            return f"تمام 🤍\nتقدر تتصفح أجهزة القراءة من هنا:\n🔗 {link}"
+        if topic == "display":
+            return f"تمام 🤍\nتقدر تتصفح الشاشات من هنا:\n🔗 {link}"
+        if topic == "software":
+            return f"تمام 🤍\nتقدر تتصفح التراخيص والبرامج من هنا:\n🔗 {link}"
+        return f"تمام 🤍\n🔗 {link}"
+    else:
+        if topic == "reading":
+            return f"Got it 🤍\nBrowse e-readers here:\n🔗 {link}"
+        if topic == "display":
+            return f"Got it 🤍\nBrowse screens here:\n🔗 {link}"
+        if topic == "software":
+            return f"Got it 🤍\nBrowse software/licenses here:\n🔗 {link}"
+        return f"Got it 🤍\n🔗 {link}"
 
 # ============================================
-# 10) MAIN CHAT HANDLER
+# 9) MAIN CHAT HANDLER
 # ============================================
 
 def handle_chat_message(
-    user_input: str,
-    catalog: ProductCatalog,
-    system_prompt: str,
-    conversation_history: Optional[List[Dict]] = None,
-    language: str = 'auto'
+        user_input: str,
+        catalog: ProductCatalog,
+        system_prompt: str,
+        conversation_history: Optional[List[Dict]] = None,
+        language: str = 'auto',
+        session_state: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None
 ) -> str:
-    """
-    Main chat handler with enhanced personality and accuracy.
-
-    Key features:
-    - Never invents products, links, or specifications
-    - Provides accurate installment, battery, and lifespan information
-    - Recommends appropriate devices based on usage
-    - Maintains cheerful, humorous personality
-    - Stable language handling with explicit switch support
-    - Properly formats links and descriptions
-    """
     try:
         if user_input is None or not user_input.strip():
             raise EmptyInputError()
@@ -751,345 +879,394 @@ def handle_chat_message(
         if len(cleaned) > 5000:
             cleaned = cleaned[:5000]
 
-        # Determine language with stability
         if language == "auto":
             language = stable_language(cleaned, conversation_history)
 
-        # Handle greetings with personality
-        if is_probably_just_greeting(cleaned):
-            return greeting_reply(cleaned, language)
+        sess = _get_session(session_state, session_id)
 
-        # Load catalog
+        # intro tracking (works with either session_state or history)
+        introduced = bool(sess.get("introduced", False)) or _already_introduced_from_history(conversation_history)
+
+        # 1) jokes (including "another one")
+        if is_joke_request(cleaned) or (is_another_joke_request(cleaned) and sess.get("last_intent") == "joke"):
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "joke")
+            return tell_joke(language)
+
+        # 2) greeting
+        if is_probably_just_greeting(cleaned):
+            reply = greeting_reply(language, first_time=(not introduced), original_text=cleaned)
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "greeting")
+            # do not reset mode on greeting
+            return reply
+
+        # 3) load catalog best-effort
         try:
             catalog.load()
         except CatalogLoadError as e:
             logger.error(f"Catalog load error: {e.message}")
+            # still continue; but any product response should be safe fallback
+            pass
 
-        # Initialize search results
-        search_results: List[Dict[str, Any]] = []
-        catalog_context = ""
-        allowed_urls = set(OFFICIAL_LINKS.values())
+        # 4) language switch
+        lang_switch = detect_explicit_language_switch(cleaned)
+        if lang_switch:
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "other")
+            if lang_switch == "ar":
+                return "تمام 🤍\nخلاص بكلمك عربي—وش تحتاج؟ 😊"
+            return "Done 🤍\nSwitched to English—what do you need? 😊"
 
-        # Handle contact queries immediately
+        # 5) contact query
         if is_contact_query(cleaned):
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "facts")
             if language == "ar":
-                return (
-                    "أكيد! يسعدني أساعدك 🤍\n\n"
-                    "**طرق التواصل معنا:**\n"
-                    f"📱 واتساب: {OFFICIAL_LINKS['whatsapp']}\n"
-                    f"🌐 المتجر الإلكتروني: {OFFICIAL_LINKS['store']}\n\n"
-                    "أنا سمورتي، مساعدك الذكي (لسه تحت التطوير 😅)\n"
-                    "إذا لخبطت في شي، قلّي وراح أتعلم وأتحسن! 💪"
-                )
-            return (
-                "Sure! I'd be happy to help 🤍\n\n"
-                "**Contact us via:**\n"
-                f"📱 WhatsApp: {OFFICIAL_LINKS['whatsapp']}\n"
-                f"🌐 Online Store: {OFFICIAL_LINKS['store']}\n\n"
-                "I'm Smorti, your AI assistant (still under development 😅)\n"
-                "If I mess up, let me know and I'll learn and improve! 💪"
-            )
+                return f"أكيد 🤍\n📱 واتساب: {OFFICIAL_LINKS['whatsapp']}"
+            return f"Sure 🤍\n📱 WhatsApp: {OFFICIAL_LINKS['whatsapp']}"
 
-        # Handle specific queries with accurate information
+        # 6) facts (keep content unchanged, improve framing only)
+        if is_shipping_query(cleaned):
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "facts")
+            title = "تمام—هذي سياسة الشحن عندنا 👇" if language == "ar" else "Here’s our shipping info 👇"
+            return wrap_facts_ar(title, SHIPPING_FACTS_AR) if language == "ar" else wrap_facts_en(title, SHIPPING_FACTS_EN)
+
+        if is_warranty_query(cleaned):
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "facts")
+            title = "أكيد—هذي سياسة الضمان 👇" if language == "ar" else "Here’s our warranty policy 👇"
+            return wrap_facts_ar(title, WARRANTY_FACTS_AR) if language == "ar" else wrap_facts_en(title, WARRANTY_FACTS_EN)
+
         if is_installment_query(cleaned):
-            # Return accurate installment info
-            return INSTALLMENT_FACTS_AR if language == "ar" else INSTALLMENT_FACTS_EN
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "facts")
+            title = "أكيد—هذي معلومات التقسيط 👇" if language == "ar" else "Here are the installment details 👇"
+            return wrap_facts_ar(title, INSTALLMENT_FACTS_AR) if language == "ar" else wrap_facts_en(title, INSTALLMENT_FACTS_EN)
 
-        if is_battery_query(cleaned) and is_boox_query(cleaned):
-            # Battery query for e-readers
-            return BATTERY_FACTS_AR if language == "ar" else BATTERY_FACTS_EN
+        if is_battery_query(cleaned) and (is_boox_query(cleaned) or is_reading_device_intent(cleaned)):
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "facts")
+            title = "تمام—هذي معلومات البطارية 👇" if language == "ar" else "Battery info 👇"
+            return wrap_facts_ar(title, BATTERY_FACTS_AR) if language == "ar" else wrap_facts_en(title, BATTERY_FACTS_EN)
 
         if is_lifespan_query(cleaned):
-            # Device lifespan query
-            return LIFESPAN_FACTS_AR if language == "ar" else LIFESPAN_FACTS_EN
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "facts")
+            title = "أكيد—هذا عمر الجهاز الافتراضي 👇" if language == "ar" else "Lifespan info 👇"
+            return wrap_facts_ar(title, LIFESPAN_FACTS_AR) if language == "ar" else wrap_facts_en(title, LIFESPAN_FACTS_EN)
 
-        # Product searches with proper categorization
-        if is_monitor_or_screen_query(cleaned) or is_gaming_query(cleaned):
-            # Search for monitors and interactive screens
-            base = catalog.search_products(cleaned, limit=30)
+        # ============================================
+        # 7) TOPIC / MODE LOCK
+        # ============================================
+
+        mode = str(sess.get("mode", "") or "").strip()  # "reading" / "display" / "software" / ""
+
+        wants_reading = is_reading_device_intent(cleaned) or is_boox_query(cleaned)
+        wants_display = is_monitor_or_screen_query(cleaned) or is_gaming_query(cleaned)
+        wants_software = is_programs_query(cleaned)
+
+        # if user already in reading mode and asks "big screen" or "notes too", keep reading mode
+        if mode == "reading" and (wants_big_screen(cleaned) or is_notes_intent(cleaned)):
+            wants_display = False
+            wants_reading = True
+
+        # switch mode only on explicit request
+        if wants_reading and not wants_display and not wants_software:
+            mode = "reading"
+        elif wants_display:
+            mode = "display"
+        elif wants_software:
+            mode = "software"
+
+        _set_session(session_state, session_id, "mode", mode)
+
+        # ============================================
+        # 8) CSV-ONLY: READING DEVICES (no Groq)
+        # ============================================
+
+        if mode == "reading" and not is_accessory_query(cleaned):
+            base = catalog.search_products("boox eink قارئ ebook e-ink onyx", limit=70)
             filtered = catalog.filter_by_type(
                 base,
-                include_any=[
-                    "monitor", "thinkvision", "lenovo", "sparq",
-                    "interactive", "تفاعلية", "شاشة كمبيوتر"
-                ]
+                include_any=["boox", "onyx", "eink", "e-ink", "قارئ", "ebook", "e-book", "note", "palma", "go", "tab"]
             )
-            if not filtered:
-                # Try broader search
-                base2 = catalog.search_products("monitor شاشة sparq interactive", limit=30)
-                filtered = catalog.filter_by_type(
-                    base2,
-                    include_any=["monitor", "sparq", "interactive", "تفاعلية"]
+            filtered = _exclude_accessories(filtered)
+
+            wants_notes = is_notes_intent(cleaned)
+            if wants_notes:
+                filtered_notes = catalog.filter_by_type(
+                    filtered,
+                    include_any=["note", "notes", "notetaking", "stylus", "pen", "wacom", "قلم", "ستايلس", "تدوين", "ملاحظات"]
                 )
-            search_results = filtered[:10]
+                filtered_notes = _exclude_accessories(filtered_notes)
 
-        elif is_programs_query(cleaned):
-            # Search for software/licenses
-            base = catalog.search_products(cleaned, limit=20)
-            filtered = catalog.filter_by_type(
-                base,
-                include_any=["license", "ترخيص", "software", "برنامج", "program"]
-            )
-            search_results = (filtered or base)[:10]
+                # If nothing in CSV clearly indicates notes support, don't guess.
+                if not filtered_notes:
+                    _set_session(session_state, session_id, "introduced", True)
+                    _set_session(session_state, session_id, "last_intent", "products")
+                    if language == "ar":
+                        return (
+                            "تمام 🤍\n"
+                            "للأسف ما ظهر لي وصف واضح يدعم *الملاحظات/القلم* ضمن النتائج اللي طلعت لي.\n\n"
+                            f"🔍 تقدر تتصفح كل أجهزة القراءة هنا:\n{OFFICIAL_LINKS['tablets']}\n\n"
+                            "تبيني أرتّب لك الخيارات حسب **المقاس** ولا حسب **الميزانية**؟ 😊"
+                        )
+                    return (
+                        "Got it 🤍\n"
+                        "I couldn’t find clear catalog text confirming *notes/pen support* in the matches I pulled.\n\n"
+                        f"🔍 Browse all e-readers here:\n{OFFICIAL_LINKS['tablets']}\n\n"
+                        "Should I sort options by **screen size** or by **budget**? 😊"
+                    )
 
-        elif is_boox_query(cleaned):
-            # Search for BOOX devices
-            base = catalog.search_products(cleaned, limit=20)
+                filtered = filtered_notes
+
+            # Big screen preference
+            if wants_big_screen(cleaned):
+                filtered = sorted(filtered, key=lambda p: _safe_float(p.get("screen_size_in", "")), reverse=True)
+
+            top = filtered[:3]
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "products")
+
+            if not top:
+                return safe_fallback_message(language, "reading")
+
+            if language == "ar":
+                msg = "أكيد 🤍 لقيت لك خيارات ممتازة:\n\n"
+                for i, p in enumerate(top, 1):
+                    name = p.get("name_ar") or p.get("name_en") or "غير مذكور"
+                    price = p.get("price_sar", 0)
+                    scr = p.get("screen_size_in", "")
+                    storage = p.get("storage_gb", "")
+                    url = (p.get("product_url") or "").strip()
+                    if not url.startswith("http"):
+                        url = OFFICIAL_LINKS["tablets"]
+
+                    msg += f"**{i}) {name}**\n"
+                    msg += f"• 💰 السعر: {price} ريال\n"
+                    if scr:
+                        msg += f"• 📏 الشاشة: {scr} بوصة\n"
+                    if storage:
+                        msg += f"• 💾 التخزين: {storage} GB\n"
+                    msg += f"• 🔗 الرابط: {url}\n\n"
+
+                msg += f"🔍 باقي الأجهزة هنا: {OFFICIAL_LINKS['tablets']}"
+                return msg
+
+            msg = "Sure 🤍 I found great options:\n\n"
+            for i, p in enumerate(top, 1):
+                name = p.get("name_en") or p.get("name_ar") or "Not listed"
+                price = p.get("price_sar", 0)
+                scr = p.get("screen_size_in", "")
+                storage = p.get("storage_gb", "")
+                url = (p.get("product_url") or "").strip()
+                if not url.startswith("http"):
+                    url = OFFICIAL_LINKS["tablets"]
+
+                msg += f"**{i}) {name}**\n"
+                msg += f"• 💰 Price: {price} SAR\n"
+                if scr:
+                    msg += f"• 📏 Screen: {scr} inches\n"
+                if storage:
+                    msg += f"• 💾 Storage: {storage} GB\n"
+                msg += f"• 🔗 Link: {url}\n\n"
+
+            msg += f"🔍 More devices: {OFFICIAL_LINKS['tablets']}"
+            return msg
+
+        # ============================================
+        # 9) CSV-ONLY: DISPLAYS / GAMING SCREENS (no Groq)
+        # ============================================
+
+        if mode == "display":
+            base = catalog.search_products(cleaned, limit=60)
             filtered = catalog.filter_by_type(
                 base,
                 include_any=[
-                    "boox", "eink", "e-ink", "قارئ", "note",
-                    "palma", "go", "tab", "reading"
+                    "monitor", "monitors", "screen", "display",
+                    "thinkvision", "lenovo", "gaming",
+                    "sparq", "interactive",
+                    "شاشة", "تفاعلية", "سبارك"
                 ]
             )
-            search_results = (filtered or base)[:10]
+            filtered = _exclude_accessories(filtered)
 
+            # If user says "شاشة العاب" and catalog doesn't tag gaming, we still show best available screens
+            top = filtered[:3]
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "products")
+
+            if not top:
+                return safe_fallback_message(language, "display")
+
+            if language == "ar":
+                msg = "أكيد 🤍 هذي خيارات شاشات ممكن تناسب الألعاب:\n\n"
+                for i, p in enumerate(top, 1):
+                    name = p.get("name_ar") or p.get("name_en") or "غير مذكور"
+                    price = p.get("price_sar", 0)
+                    scr = p.get("screen_size_in", "")
+                    url = (p.get("product_url") or "").strip()
+                    if not url.startswith("http"):
+                        url = OFFICIAL_LINKS["interactive"]
+
+                    msg += f"**{i}) {name}**\n"
+                    msg += f"• 💰 السعر: {price} ريال\n"
+                    if scr:
+                        msg += f"• 📏 الشاشة: {scr} بوصة\n"
+                    msg += f"• 🔗 الرابط: {url}\n\n"
+
+                msg += f"🔍 باقي الشاشات هنا: {OFFICIAL_LINKS['interactive']}"
+                return msg
+
+            msg = "Sure 🤍 Here are screen options that can work for gaming:\n\n"
+            for i, p in enumerate(top, 1):
+                name = p.get("name_en") or p.get("name_ar") or "Not listed"
+                price = p.get("price_sar", 0)
+                scr = p.get("screen_size_in", "")
+                url = (p.get("product_url") or "").strip()
+                if not url.startswith("http"):
+                    url = OFFICIAL_LINKS["interactive"]
+
+                msg += f"**{i}) {name}**\n"
+                msg += f"• 💰 Price: {price} SAR\n"
+                if scr:
+                    msg += f"• 📏 Screen: {scr} inches\n"
+                msg += f"• 🔗 Link: {url}\n\n"
+
+            msg += f"🔍 More screens: {OFFICIAL_LINKS['interactive']}"
+            return msg
+
+        # ============================================
+        # 10) CSV-ONLY: SOFTWARE LICENSES (optional local)
+        # ============================================
+
+        if mode == "software":
+            base = catalog.search_products(cleaned, limit=40)
+            filtered = catalog.filter_by_type(
+                base,
+                include_any=["license", "ترخيص", "software", "برنامج", "program", "office", "microsoft"]
+            )
+            filtered = _exclude_accessories(filtered)
+
+            top = filtered[:3]
+            _set_session(session_state, session_id, "introduced", True)
+            _set_session(session_state, session_id, "last_intent", "products")
+
+            if not top:
+                return safe_fallback_message(language, "software")
+
+            if language == "ar":
+                msg = "أكيد 🤍 هذي خيارات تراخيص/برامج:\n\n"
+                for i, p in enumerate(top, 1):
+                    name = p.get("name_ar") or p.get("name_en") or "غير مذكور"
+                    price = p.get("price_sar", 0)
+                    url = (p.get("product_url") or "").strip()
+                    if not url.startswith("http"):
+                        url = OFFICIAL_LINKS["software"]
+                    msg += f"**{i}) {name}**\n• 💰 السعر: {price} ريال\n• 🔗 الرابط: {url}\n\n"
+                msg += f"🔍 باقي التراخيص هنا: {OFFICIAL_LINKS['software']}"
+                return msg
+
+            msg = "Sure 🤍 Here are software/license options:\n\n"
+            for i, p in enumerate(top, 1):
+                name = p.get("name_en") or p.get("name_ar") or "Not listed"
+                price = p.get("price_sar", 0)
+                url = (p.get("product_url") or "").strip()
+                if not url.startswith("http"):
+                    url = OFFICIAL_LINKS["software"]
+                msg += f"**{i}) {name}**\n• 💰 Price: {price} SAR\n• 🔗 Link: {url}\n\n"
+            msg += f"🔍 More licenses: {OFFICIAL_LINKS['software']}"
+            return msg
+
+        # ============================================
+        # 11) GROQ: only for non-product chat (safe style, no reintro)
+        # ============================================
+
+        _set_session(session_state, session_id, "introduced", True)
+        _set_session(session_state, session_id, "last_intent", "llm")
+
+        # pick fallback category for URL scrubbing (never homepage)
+        if is_programs_query(cleaned):
+            fallback_url = OFFICIAL_LINKS["software"]
+            topic = "software"
+        elif is_monitor_or_screen_query(cleaned) or is_gaming_query(cleaned):
+            fallback_url = OFFICIAL_LINKS["interactive"]
+            topic = "display"
+        elif is_boox_query(cleaned) or is_reading_device_intent(cleaned):
+            fallback_url = OFFICIAL_LINKS["tablets"]
+            topic = "reading"
         else:
-            # General product search
-            product_indicators = [
-                "سعر", "price", "بكم", "كم سعر", "مواصفات", "spec",
-                "قارن", "best", "recommend", "اقترح", "device", "جهاز"
-            ]
-            if has_any(cleaned, product_indicators):
-                search_results = catalog.search_products(cleaned, limit=10)
+            fallback_url = OFFICIAL_LINKS["tablets"]
+            topic = ""
 
-        # Build product context
-        if search_results:
-            catalog_context = build_product_context(search_results, language)
-            allowed_urls = allowed_urls_from_products(search_results)
-        else:
-            # No products found but user likely wanted products
-            if has_any(cleaned, [
-                "boox", "شاشة", "monitor", "ترخيص", "license",
-                "برنامج", "سعر", "price", "جهاز", "device"
-            ]):
-                catalog_context = build_product_context([], language)
-                allowed_urls = set(OFFICIAL_LINKS.values())
+        # Strong style rules to stop re-introduction + stop hallucination
+        style_rules = (
+            "STYLE RULES:\n"
+            "- Do NOT re-introduce yourself (no 'I am Smorti' / 'أنا سمورتي') unless the user asks who you are.\n"
+            "- Do NOT greet repeatedly.\n"
+            "- Be warm, professional, lightly humorous.\n"
+            "- If info is missing: ask ONE short clarifying question.\n"
+            "- NEVER invent products, prices, specs, or links.\n"
+            "- NEVER use the store homepage as a product link.\n"
+        )
 
-        # Set creativity level
-        temperature = 0.70 if is_poetry_or_story_request(cleaned) else 0.35
+        temperature = 0.10
 
-        # Build enhanced prompt with business rules
-        if language == "ar":
-            business_rules = f"""
-=== معلومات الأعمال (يجب أن تكون صحيحة 100%) ===
-{INSTALLMENT_FACTS_AR}
-
-{BATTERY_FACTS_AR}
-
-{LIFESPAN_FACTS_AR}
-
-=== قواعد السلوك والشخصية ===
-🤖 **من أنت:**
-أنت **سمورتي** - مساعد ذكاء اصطناعي ذكي ومرح في متجر SMART
-- لسه تحت التطوير، فعطني فرصة! 🔧
-- خفيف ظل وساخر بشكل لطيف (مو قليل أدب)
-- ودود ومتحمس لمساعدة العملاء
-- تحب تمزح بين الحين والآخر لكسر الرسمية 😄
-- تعترف بأخطائك وتتعلم منها
-
-😊 **أسلوب التواصل:**
-- كن مرح وودود باستمرار
-- استخدم الإيموجي بشكل طبيعي 🤍
-- اكسر الجليد بنكتة خفيفة أو تعليق ساخر بين الحين والآخر
-- لا تبالغ في النكات - خليها طبيعية
-- استخدم القلوب البيضاء 🤍 (مو أي لون ثاني)
-- نوّع في التحيات والعبارات (لا تكرر نفس الكلمات دائماً)
-
-🌐 **اللغة:**
-- التزم بلغة العميل بثبات
-- إذا بدأ عربي → استمر عربي
-- إذا بدأ إنجليزي → استمر إنجليزي
-- لا تتأثر بكلمة أو كلمتين من لغة ثانية
-- غيّر اللغة فقط إذا طلب العميل صراحة أو استخدم نص طويل بلغة مختلفة
-
-💚 **التحيات الخاصة:**
-- إذا قال "السلام عليكم ورحمة الله وبركاته" (كامل):
-  → رد كامل: "وعليكم السلام ورحمة الله وبركاته 🤍🤍"
-- للتحيات العادية: نوّع في الرد (يا هلا، مرحبا، أهلين، حياك، منور)
-- استخدم القلوب البيضاء دائماً 🤍
-
-=== قواعد المنتجات (صارمة جداً) ===
-🚫 **ممنوع منعاً باتاً:**
-1. اختراع أي منتج أو مواصفة غير موجودة في الكتالوج
-2. اختراع أي روابط أو أسعار
-3. وضع placeholders مثل [رقم الهاتف] أو [email]
-4. ذكر منتجات أو موديلات غير موجودة في البيانات
-
-✅ **يجب عليك:**
-1. استخدام البيانات من AVAILABLE PRODUCTS فقط
-2. إذا المواصفة مو موجودة → قل: "غير مذكور في الكتالوج"
-3. استخدام الروابط من product_url/category_link أو الروابط الرسمية فقط
-4. التوجيه للموقع أو WhatsApp إذا المعلومة مو متوفرة
-
-📱 **التواصل الرسمي فقط:**
-- واتساب: {OFFICIAL_LINKS['whatsapp']}
-- المتجر: {OFFICIAL_LINKS['store']}
-
-=== توصيات الاستخدام ===
-📚 **أجهزة BOOX (قراء إلكترونية):**
-- ممتازة للقراءة والكتابة وملفات PDF والتدوين
-- مناسبة للعمل الخفيف والإنتاجية
-- **ليست الأفضل** لمشاهدة الفيديو أو الألعاب بسبب شاشة الحبر الإلكتروني
-- إذا العميل يبي شاشة للميديا → اقترح تابلت عادي أو شاشة تفاعلية
-
-🖥️ **الشاشات للألعاب:**
-- إذا طلب "شاشة" أو "مونيتور" للألعاب:
-  → اقترح **مونيتور** أو **شاشة تفاعلية** من الكتالوج
-- وضّح: "تقدر تلعب عليها" لكن مو شرط تكون مخصصة gaming بناءً على المواصفات
-- لا تقترح BOOX للألعاب أبداً
-
-🖥️ **الشاشات التفاعلية (Interactive Screens):**
-- قوية للاجتماعات والترفيه والعمل
-- يمكن استخدامها للألعاب لكن أسعارها أعلى لأنها All-in-One
-- اذكر المواصفات المتوفرة من الكتالوج
-
-💿 **البرامج والتراخيص:**
-- اشرح ماذا يفعل البرنامج بشكل عام
-- لا تخترع شروط ترخيص أو اشتراكات
-- إذا التفاصيل مو موجودة → وجّه لرابط المنتج أو قسم البرامج
-
-=== الإبداع ===
-✍️ **القصائد والقصص:**
-- مسموح لك إبداع أدبي عالي
-- لكن بدون اختراع أرقام أو مواصفات أو روابط غير موجودة
-- ركّز على الجانب الأدبي والإبداعي
-
-==================
-تذكر: كن مرح وساخر ومفيد في نفس الوقت! 😄🤍
-"""
-        else:
-            business_rules = f"""
-=== BUSINESS FACTS (Must be 100% Accurate) ===
-{INSTALLMENT_FACTS_EN}
-
-{BATTERY_FACTS_EN}
-
-{LIFESPAN_FACTS_EN}
-
-=== BEHAVIOR AND PERSONALITY RULES ===
-🤖 **Who You Are:**
-You are **Smorti** - a smart, cheerful AI assistant at SMART store
-- Still under development, so bear with me! 🔧
-- Playful and lightly sarcastic (but always polite)
-- Friendly and enthusiastic about helping customers
-- Love to crack jokes occasionally to break formality 😄
-- Acknowledge mistakes and learn from them
-
-😊 **Communication Style:**
-- Be cheerful and friendly consistently
-- Use emojis naturally 🤍
-- Break the ice with light jokes or sarcastic comments occasionally
-- Don't overdo the jokes - keep it natural
-- Use white hearts 🤍 (not other colors)
-- Vary your greetings and phrases (don't repeat same words always)
-
-🌐 **Language:**
-- Stick to the user's language consistently
-- If they start in Arabic → continue in Arabic
-- If they start in English → continue in English
-- Don't switch because of one or two words in another language
-- Only switch if explicitly requested or long text in different language
-
-💚 **Special Greetings:**
-- If they say full Islamic greeting:
-  → Respond fully: "وعليكم السلام ورحمة الله وبركاته 🤍🤍"
-- For casual greetings: vary responses (hey, hello, hi, welcome, greetings)
-- Always use white hearts 🤍
-
-=== PRODUCT RULES (Very Strict) ===
-🚫 **NEVER:**
-1. Invent any product or specification not in catalog
-2. Invent any links or prices
-3. Use placeholders like [phone number] or [email]
-4. Mention products or models not in the data
-
-✅ **ALWAYS:**
-1. Use data from AVAILABLE PRODUCTS only
-2. If spec is missing → say: "Not listed in our catalog"
-3. Use links from product_url/category_link or official links only
-4. Direct to website or WhatsApp if information unavailable
-
-📱 **Official Contact Only:**
-- WhatsApp: {OFFICIAL_LINKS['whatsapp']}
-- Store: {OFFICIAL_LINKS['store']}
-
-=== USAGE RECOMMENDATIONS ===
-📚 **BOOX Devices (E-readers):**
-- Excellent for reading, writing, PDFs, and note-taking
-- Suitable for light work and productivity
-- **NOT ideal** for video watching or gaming due to e-ink screen nature
-- If customer wants screen for media → suggest regular tablet or interactive screen
-
-🖥️ **Gaming Screens:**
-- If they ask for "screen" or "monitor" for gaming:
-  → Suggest **monitor** or **interactive screen** from catalog
-- Clarify: "You can play games on it" but not necessarily gaming-first based on specs
-- NEVER suggest BOOX for gaming
-
-🖥️ **Interactive Screens:**
-- Great for meetings, entertainment, and work
-- Can be used for gaming but priced higher as All-in-One systems
-- Mention available specs from catalog
-
-💿 **Software & Licenses:**
-- Explain what the software does generally
-- Don't invent license terms or subscription details
-- If details missing → direct to product link or software section
-
-=== CREATIVITY ===
-✍️ **Poems & Stories:**
-- High creative writing allowed
-- But NO invented numbers, specs, or non-existent links
-- Focus on literary and creative aspects
-
-==================
-Remember: Be cheerful, sarcastic, and helpful all at once! 😄🤍
-"""
-
-        # Build final prompt
-        enhanced_prompt = cleaned + "\n\n" + business_rules + "\n\n" + catalog_context
-
-        # Call AI model
         response = call_groq_api(
-            prompt=enhanced_prompt,
+            prompt=cleaned + "\n\n" + style_rules,
             system_prompt=system_prompt,
             conversation_history=conversation_history,
             temperature=temperature,
             max_tokens=900
         )
 
-        # Safety post-processing
-        response = scrub_unknown_urls(response, allowed_urls)
+        # Post-processing safety
+        allowed_urls = set(OFFICIAL_LINKS.values())
+        response = scrub_unknown_urls(response, allowed_urls, fallback_url, allow_store=False)
         response = scrub_placeholders(response)
+
+        # If Groq outputs a forbidden/hallucinated BOOX model name, do a safe fallback
+        forbidden_markers = ["nova air", "poke 3", "max3", "note air 3", "tab ultra"]
+        if any(f in (response or "").lower() for f in forbidden_markers):
+            logger.error("🚨 Hallucination marker detected in LLM response. Using safe fallback.")
+            return safe_fallback_message(language, topic or "reading")
 
         return response
 
     except EmptyInputError as e:
         lang = 'ar' if is_arabic(user_input or "") else 'en'
-        return get_fallback_response(e, lang)
+        return e.user_message_ar if lang == 'ar' else e.user_message_en
 
-    except GroqRateLimitError as e:
-        lang = language if language in ("ar", "en") else "ar"
-        return get_fallback_response(e, lang)
-
-    except GroqAPIError as e:
-        lang = language if language in ("ar", "en") else "ar"
-        return get_fallback_response(e, lang)
+    except (GroqRateLimitError, GroqAPIError) as e:
+        # Always accurate fallback (no random info)
+        lang = language if language in ("ar", "en") else ('ar' if is_arabic(user_input or "") else 'en')
+        topic = str(_get_session(session_state, session_id).get("mode", "") or "")
+        if not topic:
+            # infer topic from text
+            if is_programs_query(user_input or ""):
+                topic = "software"
+            elif is_monitor_or_screen_query(user_input or "") or is_gaming_query(user_input or ""):
+                topic = "display"
+            else:
+                topic = "reading"
+        return safe_fallback_message(lang, topic)
 
     except Exception as e:
         logger.critical(f"UNEXPECTED ERROR: {e}", exc_info=True)
-        if language == "ar":
-            return "عذراً، صار خطأ غير متوقع 😔\nجرب مرة ثانية أو تواصل معنا عبر WhatsApp"
-        return "Sorry, an unexpected error occurred 😔\nPlease try again or contact us via WhatsApp"
-
+        lang = language if language in ("ar", "en") else ('ar' if is_arabic(user_input or "") else 'en')
+        # Safe minimal message + correct category link
+        topic = str(_get_session(session_state, session_id).get("mode", "") or "reading")
+        if lang == "ar":
+            return "صار شي غير متوقع 😔🤍\n" + safe_fallback_message("ar", topic)
+        return "Something unexpected happened 😔🤍\n" + safe_fallback_message("en", topic)
 
 # ============================================
-# 11) HEALTH CHECK & CLI
+# 12) HEALTH CHECK & CLI
 # ============================================
 
 def run_health_check(catalog_path: str) -> Dict[str, str]:
-    """Run system health check"""
     health = {
         'timestamp': datetime.now().isoformat(),
         'groq_api': '❌ Not tested',
@@ -1126,11 +1303,9 @@ def run_health_check(catalog_path: str) -> Dict[str, str]:
 
     return health
 
-
 def main():
-    """CLI interface for testing"""
     print("=" * 60)
-    print("🤖 SMORTI AI AGENT - LOCAL CLI TEST")
+    print("🤖 SMORTI AI AGENT - ANTI-HALLUCINATION VERSION")
     print(f"Version: {APP_VERSION}")
     print("=" * 60)
 
@@ -1140,26 +1315,39 @@ def main():
         print(f"  {k}: {v}")
 
     catalog = ProductCatalog('data/products_enriched.csv')
-    system_prompt = "You are Smorti, an AI assistant for SMART store. Follow the given rules."
-    hist: List[Dict[str, str]] = []
+    system_prompt = (
+        "You are Smorti for SMART store. "
+        "Never invent products, prices, specs, or links. "
+        "Do not re-introduce yourself unless asked who you are."
+    )
 
-    print("\n💬 Chat started! Type 'exit' or 'quit' to end.\n")
+    hist: List[Dict[str, str]] = []
+    session_state: Dict[str, Any] = {}
+    session_id = "cli"
+
+    print("\n💬 Chat started! Type 'exit' to end.\n")
 
     while True:
         user = input("\nYou: ").strip()
         if user.lower() in ("exit", "quit"):
             print("👋 Goodbye!")
             break
-
         if not user:
             continue
 
-        ans = handle_chat_message(user, catalog, system_prompt, hist, language="auto")
+        ans = handle_chat_message(
+            user_input=user,
+            catalog=catalog,
+            system_prompt=system_prompt,
+            conversation_history=hist,
+            language="auto",
+            session_state=session_state,
+            session_id=session_id
+        )
         print(f"\nSmorti: {ans}")
 
         hist.append({"role": "user", "content": user})
         hist.append({"role": "assistant", "content": ans})
-
 
 if __name__ == "__main__":
     main()
