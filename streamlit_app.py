@@ -287,8 +287,6 @@ st.markdown(
         color: inherit;
     }
 
-    /* Sidebar styling - removed to fix white background issue */
-
     /* Button styling */
     .stButton button {
         width: 100%;
@@ -468,77 +466,6 @@ with st.sidebar:
                 st.markdown(changelog_content)
         else:
             st.info("Changelog file not found. Please upload CHANGES_v1.3.md")
-
-    st.markdown("---")
-
-    # Feedback system
-    st.subheader("💬 إرسال ملاحظات / Send Feedback")
-    if st.button("✍️ إرسال ملاحظة / Submit Feedback", use_container_width=True):
-        st.session_state.show_feedback = not st.session_state.get("show_feedback", False)
-
-    if st.session_state.get("show_feedback", False):
-        with st.form("feedback_form"):
-            st.write("**نرحب بملاحظاتك / We welcome your feedback!**")
-
-            feedback_text = st.text_area(
-                "اكتب ملاحظتك هنا / Write your feedback here:",
-                height=150,
-                placeholder="مثال: واجهت مشكلة في... / Example: I encountered an issue with..."
-            )
-
-            feedback_image = st.file_uploader(
-                "إرفاق صورة (اختياري) / Attach image (optional):",
-                type=['png', 'jpg', 'jpeg'],
-                help="ارفع صورة توضح المشكلة / Upload an image showing the issue"
-            )
-
-            feedback_type = st.selectbox(
-                "نوع الملاحظة / Feedback Type:",
-                ["🐛 Bug Report", "💡 Feature Request", "📝 General Feedback", "❓ Question"]
-            )
-
-            submitted = st.form_submit_button("إرسال / Submit", use_container_width=True)
-
-            if submitted and feedback_text:
-                # Save feedback
-                feedback_dir = ROOT / "feedback"
-                feedback_dir.mkdir(exist_ok=True)
-
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                feedback_id = f"{timestamp}_{st.session_state.session_id}"
-
-                # Save text feedback
-                feedback_file = feedback_dir / f"feedback_{feedback_id}.json"
-                feedback_data = {
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "session_id": st.session_state.session_id,
-                    "type": feedback_type,
-                    "text": feedback_text,
-                    "has_image": feedback_image is not None
-                }
-
-                with open(feedback_file, 'w', encoding='utf-8') as f:
-                    json.dump(feedback_data, f, ensure_ascii=False, indent=2)
-
-                # Save image if provided
-                if feedback_image:
-                    image_file = feedback_dir / f"feedback_{feedback_id}.{feedback_image.type.split('/')[-1]}"
-                    with open(image_file, 'wb') as f:
-                        f.write(feedback_image.getvalue())
-
-                st.success("✅ شكراً! تم إرسال ملاحظتك بنجاح / Thank you! Feedback submitted successfully")
-                log_event("feedback_submitted", {
-                    "type": feedback_type,
-                    "has_text": bool(feedback_text),
-                    "has_image": feedback_image is not None
-                })
-
-                # Clear form
-                st.session_state.show_feedback = False
-                time.sleep(1)
-                st.rerun()
-            elif submitted:
-                st.error("⚠️ الرجاء كتابة ملاحظتك / Please write your feedback")
 
     st.markdown("---")
 
